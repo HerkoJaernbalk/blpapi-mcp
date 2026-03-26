@@ -84,9 +84,9 @@ def _fmt_date(date_str: str) -> str:
     return date_str.replace("-", "")
 
 
-def _parse_datetime(date_str: str, time_str: str) -> blpapi.Datetime:
+def _parse_datetime(date_str: str, time_str: str) -> blpapi.datetime:
     d = dt.datetime.strptime(f"{date_str}T{time_str}", "%Y-%m-%dT%H:%M:%S")
-    return blpapi.Datetime(d.year, d.month, d.day, d.hour, d.minute, d.second)
+    return blpapi.datetime(d.year, d.month, d.day, d.hour, d.minute, d.second)
 
 
 def serve(args: types.StartupArgs):
