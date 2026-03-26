@@ -43,7 +43,7 @@ def serve(args: types.StartupArgs):
       Ownership:   EQY_INST_PCT_SH_OUT, SHARES_OUTSTANDING, FLOAT_SHARES_OUTSTANDING
     """
   )
-  async def bdp(tickers: list[str], flds: list[str], kwargs: dict[str, object]) -> str:
+  async def bdp(tickers: list[str], flds: list[str], kwargs: dict[str, object] | None = None) -> str:
     return _df_to_json(blp.bdp(tickers=tickers, flds=flds, kwargs=kwargs))
 
   @mcp.tool(
