@@ -1,5 +1,7 @@
 
 
+import asyncio
+
 import blpapi
 import blpapi.version
 from mcp.server.fastmcp import FastMCP
@@ -44,7 +46,8 @@ def serve(args: types.StartupArgs):
     """
   )
   async def bdp(tickers: list[str], flds: list[str], kwargs: dict[str, object] | None = None) -> str:
-    return _df_to_json(blp.bdp(tickers=tickers, flds=flds, kwargs=kwargs))
+    result = await asyncio.to_thread(blp.bdp, tickers=tickers, flds=flds, kwargs=kwargs)
+    return _df_to_json(result)
 
   @mcp.tool(
     name="bds",
@@ -69,7 +72,8 @@ def serve(args: types.StartupArgs):
     """
   )
   async def bds(tickers: list[str], flds: list[str], use_port: bool = False, kwargs: types.BloombergKWArgs = None) -> str:
-    return _df_to_json(blp.bds(tickers=tickers, flds=flds, use_port=use_port, kwargs=kwargs))
+    result = await asyncio.to_thread(blp.bds, tickers=tickers, flds=flds, use_port=use_port, kwargs=kwargs)
+    return _df_to_json(result)
 
   @mcp.tool(
     name="bdh",
@@ -93,7 +97,8 @@ def serve(args: types.StartupArgs):
     """
   )
   async def bdh(tickers: list[str], flds: list[str], start_date: str | None = None, end_date: str = "today", adjust: str | None = None, kwargs: types.BloombergKWArgs = None) -> str:
-    return _df_to_json(blp.bdh(tickers=tickers, flds=flds, start_date=start_date, end_date=end_date, adjust=adjust, kwargs=kwargs))
+    result = await asyncio.to_thread(blp.bdh, tickers=tickers, flds=flds, start_date=start_date, end_date=end_date, adjust=adjust, kwargs=kwargs)
+    return _df_to_json(result)
 
   @mcp.tool(
     name="bdib",
@@ -112,7 +117,8 @@ def serve(args: types.StartupArgs):
     """
   )
   async def bdib(ticker: str, dt: str, session: str = "allday", typ: str = "TRADE", kwargs: types.BloombergKWArgs = None) -> str:
-    return _df_to_json(blp.bdib(ticker=ticker, dt=dt, session=session, typ=typ, kwargs=kwargs))
+    result = await asyncio.to_thread(blp.bdib, ticker=ticker, dt=dt, session=session, typ=typ, kwargs=kwargs)
+    return _df_to_json(result)
 
   @mcp.tool(
     name="bdtick",
@@ -130,7 +136,8 @@ def serve(args: types.StartupArgs):
     """
   )
   async def bdtick(ticker: str, dt: str, session: str = "allday", time_range: tuple[str, ...] | None = None, types: list[str] | None = None, kwargs: types.BloombergKWArgs = None) -> str:
-    return _df_to_json(blp.bdtick(ticker=ticker, dt=dt, session=session, time_range=time_range, types=types, kwargs=kwargs))
+    result = await asyncio.to_thread(blp.bdtick, ticker=ticker, dt=dt, session=session, time_range=time_range, types=types, kwargs=kwargs)
+    return _df_to_json(result)
 
   @mcp.tool(
     name="earning",
@@ -149,7 +156,8 @@ def serve(args: types.StartupArgs):
     """
   )
   async def earning(ticker: str, by: str = "Geo", typ: str = "Revenue", ccy: str | None = None, level: str | None = None, kwargs: types.BloombergKWArgs = None) -> str:
-    return _df_to_json(blp.earning(ticker=ticker, by=by, typ=typ, ccy=ccy, level=level, kwargs=kwargs))
+    result = await asyncio.to_thread(blp.earning, ticker=ticker, by=by, typ=typ, ccy=ccy, level=level, kwargs=kwargs)
+    return _df_to_json(result)
 
   @mcp.tool(
     name="dividend",
@@ -170,7 +178,8 @@ def serve(args: types.StartupArgs):
     """
   )
   async def dividend(tickers: list[str], typ: str = "all", start_date: str | None = None, end_date: str | None = None, kwargs: types.BloombergKWArgs = None) -> str:
-    return _df_to_json(blp.dividend(tickers=tickers, typ=typ, start_date=start_date, end_date=end_date, kwargs=kwargs))
+    result = await asyncio.to_thread(blp.dividend, tickers=tickers, typ=typ, start_date=start_date, end_date=end_date, kwargs=kwargs)
+    return _df_to_json(result)
 
   @mcp.tool(
     name="beqs",
@@ -191,7 +200,8 @@ def serve(args: types.StartupArgs):
     """
   )
   async def beqs(screen: str, asof: str | None = None, typ: str = "PRIVATE", group: str = "General", kwargs: types.BloombergKWArgs = None) -> str:
-    return _df_to_json(blp.beqs(screen=screen, asof=asof, typ=typ, group=group, kwargs=kwargs))
+    result = await asyncio.to_thread(blp.beqs, screen=screen, asof=asof, typ=typ, group=group, kwargs=kwargs)
+    return _df_to_json(result)
 
   @mcp.tool(
     name="turnover",
@@ -211,7 +221,8 @@ def serve(args: types.StartupArgs):
     """
   )
   async def turnover(tickers: list[str], flds: str = "Turnover", start_date: str | None = None, end_date: str | None = None, ccy: str = "USD", factor: float = 1e6) -> str:
-    return _df_to_json(blp.turnover(tickers=tickers, flds=flds, start_date=start_date, end_date=end_date, ccy=ccy, factor=factor))
+    result = await asyncio.to_thread(blp.turnover, tickers=tickers, flds=flds, start_date=start_date, end_date=end_date, ccy=ccy, factor=factor)
+    return _df_to_json(result)
 
 
   mcp.run(transport=args.transport.value)
