@@ -1,5 +1,4 @@
 
-import collections
 import json
 import enum
 import typing
@@ -26,4 +25,4 @@ class StartupArgs:
       "port": self.port,
     })
 
-BloombergKWArgs = typing.Union[None, typing.Dict[str, typing.Any]]
+BloombergKWArgs = dict[str, typing.Any] | None
