@@ -110,7 +110,7 @@ def serve(args: types.StartupArgs):
         Common fields:
           Pricing:     PX_LAST, PX_OPEN, PX_HIGH, PX_LOW, PX_VOLUME, PX_BID, PX_ASK
           Valuation:   PE_RATIO, PX_TO_BOOK_RATIO, EV_TO_T12M_EBITDA, EQY_DVD_YLD_IND
-          Financials:  MARKET_CAP, SALES_REV_TURN, EBITDA, CF_FREE_CASH_FLOW, BOOK_VAL_PER_SH
+          Financials:  CUR_MKT_CAP, SALES_REV_TURN, EBITDA, CF_FREE_CASH_FLOW, BOOK_VAL_PER_SH
           Quality:     RETURN_ON_EQUITY, RETURN_ON_ASSET, GROSS_MARGIN, TOT_DEBT_TO_TOT_EQY
           Info:        NAME, TICKER, GICS_SECTOR_NAME, GICS_INDUSTRY_NAME, COUNTRY_ISO, CRNCY, EXCH_CODE
           Risk:        VOLATILITY_30D, VOLATILITY_90D, BETA_ADJUSTED_OVERRIDABLE, SHORT_INT_RATIO
@@ -219,7 +219,7 @@ def serve(args: types.StartupArgs):
           OHLCV:       PX_OPEN, PX_HIGH, PX_LOW, PX_LAST, PX_VOLUME
           Returns:     DAY_TO_DAY_TOT_RETURN_GROSS_DVDS (total return including dividends)
           Valuation:   PE_RATIO, PX_TO_BOOK_RATIO, EQY_DVD_YLD_IND, EV_TO_T12M_EBITDA
-          Financials:  MARKET_CAP, SALES_REV_TURN, EBITDA
+          Financials:  CUR_MKT_CAP, SALES_REV_TURN, EBITDA
           Risk:        VOLATILITY_30D, VOLATILITY_90D, BETA_ADJUSTED_OVERRIDABLE
           FX:          PX_LAST works for currency pairs (e.g. 'EURUSD Curncy')
 
