@@ -8,3 +8,16 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Secrets
+.env
+
+# Logs
+*.log
+
+# Test cache
+.pytest_cache/
+
+# Windows
+Thumbs.db
+desktop.ini
