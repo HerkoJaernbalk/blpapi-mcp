@@ -1,73 +1,78 @@
 # BLPAPI-MCP
 
-A MCP server providing financial data from Bloomberg's blpapi.
+A MCP server that gives Claude Desktop access to Bloomberg financial data.
 
-Note: A Bloomberg Terminal must be running (BBComm must be accessible) for data access.
+> **Note:** A Bloomberg Terminal must be running on the same machine for this to work.
+
+## Requirements
+
+- Windows
+- Bloomberg Terminal (running and logged in)
+- [Python 3.12](https://www.python.org/downloads/release/python-3120/) — newest version supported by blpapi
+- [UV](https://docs.astral.sh/uv/getting-started/installation/) — Python package manager
+- [Claude Desktop](https://claude.ai/download)
 
 ## Installation
-### Using [UV](https://docs.astral.sh/uv/getting-started/installation/)
 
+### 1. Install Python 3.12
+
+Download and install from [python.org](https://www.python.org/downloads/release/python-3120/). During installation, check **"Add Python to PATH"**.
+
+### 2. Install UV
+
+Open Command Prompt and run:
 
 ```bash
-uv add git+https://github.com/djsamseng/blpapi-mcp
+winget install astral-sh.uv
 ```
 
-## Run the MCP Server
+### 3. Install blpapi-mcp
+
 ```bash
-uv run blpapi-mcp --sse --host 127.0.0.1 --port 8000
+uv tool install "git+https://github.com/HerkoJaernbalk/blpapi-mcp" --extra-index-url https://blpapi.bloomberg.com/repository/releases/python/simple/
 ```
 
-## Using blpapi-cmp from [Cursor](https://docs.cursor.com/context/model-context-protocol)
-- For project only: create .cursor/mcp.json in your project directory
-- For global: create `~/.cursor/mcp.json`
-- Replace the host and port with the MCP server running from above
+The `--extra-index-url` is required because `blpapi` is distributed via Bloomberg's own package index, not the public Python one. UV will handle the isolated environment automatically.
+
+### 4. Configure Claude Desktop
+
+Open (or create) Claude Desktop's config file at:
+```
+%APPDATA%\Claude\claude_desktop_config.json
+```
+
+Add the following, replacing `<your-username>` with your Windows username:
+
 ```json
 {
   "mcpServers": {
-    "server-name": {
-      "url": "http://127.0.0.1:8000/sse",
+    "bloomberg": {
+      "command": "C:\\Users\\<your-username>\\.local\\bin\\blpapi-mcp.exe"
     }
   }
 }
 ```
 
-## Using blpapi-mcp from [Claude Code](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/tutorials#set-up-model-context-protocol-mcp)
-- Replace the url with the MCP server running from above
-```bash
-claud mcp add --transport sse blpapi-mcp http://127.0.0.1:8000/sse
-```
-- [Remote hosts for Claude Desktop is still in development](https://modelcontextprotocol.io/quickstart/user#1-download-claude-for-desktop)
+> **Tip:** Not sure of your username? Open Command Prompt and type `echo %USERNAME%`
 
-## Using blpapi-mcp from [Aider](https://aider.chat/)
-- [Pull request pending](https://github.com/Aider-AI/aider/pull/3672)
+### 5. Restart Claude Desktop
 
-## Development
-### Requirements
-1. [Install UV](https://docs.astral.sh/uv/getting-started/installation/)
+Restart Claude Desktop. If everything is set up correctly, you should see Bloomberg listed as a connected tool.
+
+## Updating
+
+To update to the latest version:
+
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
+uv tool install --force "git+https://github.com/HerkoJaernbalk/blpapi-mcp" --extra-index-url https://blpapi.bloomberg.com/repository/releases/python/simple/
 ```
-2. Clone this repository
-```bash
-git clone https://github.com/djsamseng/blpapi-mcp
-```
-3. Setup the venv
-```bash
-uv venv
-source .venv/bin/activate
-```
-4. Run the MCP server
-```bash
-uv run blpapi-mcp --sse --host 127.0.0.1 --port 8000
-```
-5. Run a test client that starts up it's own server in stdio mode
-```bash
-uv run examples/clients/blp_stdio_client.py
-```
-6. Run a test client that uses an existing running sse server
-```bash
-uv run examples/clients/blp_sse_client.py --host http://127.0.0.1 --port 8000
-```
+
+## Troubleshooting
+
+- **Bloomberg not showing in Claude** — make sure Bloomberg Terminal is open and logged in before starting Claude Desktop
+- **Install fails** — make sure Python 3.12 is installed and UV is installed, then try again
+- **Wrong path in config** — run `where blpapi-mcp` in Command Prompt to find the exact path
 
 ## Trademark Note
-This project not affiliated with Bloomberg Finance L.P. The use of the name Bloomberg is only descriptive as towards what this package is used with.
+
+This project is not affiliated with Bloomberg Finance L.P. The use of the name Bloomberg is only descriptive of what this package is used with.
