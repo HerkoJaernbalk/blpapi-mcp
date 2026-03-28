@@ -6,7 +6,6 @@ A MCP server that gives Claude Desktop access to Bloomberg financial data.
 
 ## Requirements
 
-- Windows
 - Bloomberg Terminal (running and logged in)
 - [Python 3.12](https://www.python.org/downloads/release/python-3120/) — newest version supported by blpapi
 - [UV](https://docs.astral.sh/uv/getting-started/installation/) — Python package manager
