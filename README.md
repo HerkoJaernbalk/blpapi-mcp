@@ -58,6 +58,14 @@ Add the following, replacing `<your-username>` with your Windows username:
 
 Restart Claude Desktop. If everything is set up correctly, you should see Bloomberg listed as a connected tool.
 
+## Access Bloomberg on the Go
+
+Once Claude Desktop is running on your Bloomberg Terminal machine, you can access Bloomberg data from anywhere using [Claude for iPhone](https://apps.apple.com/app/claude-ai/id6473753684) with the **Dispatch** feature.
+
+Dispatch lets your phone connect to Claude Desktop running on your local machine, meaning you can pull Bloomberg data and do financial analysis on the go — as long as your Bloomberg Terminal machine is on and Claude Desktop is running.
+
+The real power here is what Claude can do with the data: pull and compare metrics across dozens of securities in one prompt, run cross-sectional analysis, generate charts, and produce written summaries — all through natural conversation. No manual lookups, no repetitive navigation.
+
 ## Updating
 
 To update to the latest version:
