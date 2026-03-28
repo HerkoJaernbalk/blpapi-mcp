@@ -66,6 +66,8 @@ Dispatch lets your phone connect to Claude Desktop running on your local machine
 
 The real power here is what Claude can do with the data: pull and compare metrics across dozens of securities in one prompt, run cross-sectional analysis, generate charts, and produce written summaries — all through natural conversation. No manual lookups, no repetitive navigation.
 
+Any analysis Claude produces can be saved directly to your computer in any format — Excel, PowerPoint, Word, PDF, or others. Claude will ask where to save the file and prompt you to grant folder access the first time. Once permitted, files land on your computer ready to use.
+
 ## Updating
 
 To update to the latest version:
