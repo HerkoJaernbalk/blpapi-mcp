@@ -209,10 +209,11 @@ def serve(args: types.StartupArgs):
     @mcp.tool(
         name="bdh",
         description="""Get Bloomberg historical time series data for one or more securities.
-        Returns daily data between start_date and end_date.
+        Returns historical data between start_date and end_date.
 
         Ticker format: same as bdp (e.g. 'AAPL US Equity')
         Date format: 'YYYY-MM-DD' or 'today'
+        periodicity: 'DAILY' (default), 'WEEKLY', 'MONTHLY', 'QUARTERLY', 'SEMI_ANNUALLY', 'YEARLY'
         adjust: 'all' (splits+dividends), 'dvd' (dividends only), 'split' (splits only), None
 
         Common fields:
@@ -227,7 +228,7 @@ def serve(args: types.StartupArgs):
           tickers=['AAPL US Equity'], flds=['PX_LAST'], start_date='2024-01-01', end_date='2024-12-31'
         """
     )
-    async def bdh(tickers: list[str], flds: list[str], start_date: str | None = None, end_date: str = "today", adjust: str | None = None, kwargs: dict[str, object] | None = None) -> str:
+    async def bdh(tickers: list[str], flds: list[str], start_date: str | None = None, end_date: str = "today", periodicity: str = "DAILY", adjust: str | None = None, kwargs: dict[str, object] | None = None) -> str:
         session = _make_session()
         try:
             if not session.openService(_REFDATA):
@@ -241,7 +242,7 @@ def serve(args: types.StartupArgs):
             if start_date:
                 req.set("startDate", _fmt_date(start_date))
             req.set("endDate", _fmt_date(end_date))
-            req.set("periodicitySelection", "DAILY")
+            req.set("periodicitySelection", periodicity)
             if adjust in ("all", "dvd"):
                 req.set("adjustmentNormal", True)
                 req.set("adjustmentAbnormal", True)
