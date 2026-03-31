@@ -215,14 +215,19 @@ def serve(args: types.StartupArgs):
         Date format: 'YYYY-MM-DD' or 'today'
         periodicity: 'DAILY' (default), 'WEEKLY', 'MONTHLY', 'QUARTERLY', 'SEMI_ANNUALLY', 'YEARLY'
         adjust: 'all' (splits+dividends), 'dvd' (dividends only), 'split' (splits only), None
+        kwargs: Bloomberg field overrides as key/value pairs (e.g. BEST_FPERIOD_OVERRIDE, EQY_FUND_CRNCY)
 
         Common fields:
           OHLCV:       PX_OPEN, PX_HIGH, PX_LOW, PX_LAST, PX_VOLUME
           Returns:     DAY_TO_DAY_TOT_RETURN_GROSS_DVDS (total return including dividends)
           Valuation:   PE_RATIO, PX_TO_BOOK_RATIO, EQY_DVD_YLD_IND, EV_TO_T12M_EBITDA
-          Financials:  CUR_MKT_CAP, SALES_REV_TURN, EBITDA
+          Financials:  CUR_MKT_CAP, SALES_REV_TURN, EBITDA, IS_EPS, CF_FREE_CASH_FLOW
+          Estimates:   BEST_EPS, BEST_SALES, BEST_EBITDA, BEST_NET_INCOME (use periodicity='QUARTERLY' or 'YEARLY')
           Risk:        VOLATILITY_30D, VOLATILITY_90D, BETA_ADJUSTED_OVERRIDABLE
           FX:          PX_LAST works for currency pairs (e.g. 'EURUSD Curncy')
+
+        Example: Get AAPL quarterly EPS estimates for 2024:
+          tickers=['AAPL US Equity'], flds=['BEST_EPS'], start_date='2024-01-01', end_date='2024-12-31', periodicity='QUARTERLY'
 
         Example: Get AAPL closing prices for 2024:
           tickers=['AAPL US Equity'], flds=['PX_LAST'], start_date='2024-01-01', end_date='2024-12-31'
