@@ -248,8 +248,11 @@ def serve(args: types.StartupArgs):
             if adjust in ("all", "split"):
                 req.set("adjustmentSplit", True)
             if kwargs:
+                ovr = req.getElement("overrides")
                 for k, v in kwargs.items():
-                    req.set(k, v)
+                    o = ovr.appendElement()
+                    o.setElement("fieldId", k)
+                    o.setElement("value", str(v))
             session.sendRequest(req)
             result = {}
             for msg in _drain(session):
@@ -296,6 +299,9 @@ def serve(args: types.StartupArgs):
             start_t, end_t = _SESSION_TIMES.get(session, _SESSION_TIMES["allday"])
             req.set("startDateTime", _parse_datetime(date, start_t))
             req.set("endDateTime", _parse_datetime(date, end_t))
+            if kwargs:
+                for k, v in kwargs.items():
+                    req.set(k, v)
             blp_session.sendRequest(req)
             bars = []
             for msg in _drain(blp_session):
@@ -346,6 +352,9 @@ def serve(args: types.StartupArgs):
                 start_t, end_t = _SESSION_TIMES.get(session, _SESSION_TIMES["allday"])
             req.set("startDateTime", _parse_datetime(date, start_t))
             req.set("endDateTime", _parse_datetime(date, end_t))
+            if kwargs:
+                for k, v in kwargs.items():
+                    req.set(k, v)
             blp_session.sendRequest(req)
             ticks = []
             for msg in _drain(blp_session):
@@ -488,6 +497,9 @@ def serve(args: types.StartupArgs):
             req.set("Group", group)
             if asof:
                 req.set("asofDate", _fmt_date(asof))
+            if kwargs:
+                for k, v in kwargs.items():
+                    req.set(k, v)
             session.sendRequest(req)
             results = []
             for msg in _drain(session):
