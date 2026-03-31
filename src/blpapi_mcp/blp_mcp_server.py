@@ -12,6 +12,7 @@ from . import types
 
 _REFDATA = "//blp/refdata"
 _EXRSVC  = "//blp/exrsvc"
+_BQLSVC  = "//blp/bqlsvc"
 _TIMEOUT = 10_000  # ms
 
 # Intraday session time windows (HH:MM:SS)
@@ -564,6 +565,86 @@ def serve(args: types.StartupArgs):
                     rows.append({"date": date_val, "PX_LAST": px, "PX_VOLUME": vol, "turnover": tv})
                 result[ticker] = rows
             return json.dumps(result)
+        finally:
+            session.stop()
+
+    @mcp.tool(
+        name="bql",
+        description="""Run a Bloomberg Query Language (BQL) query. More powerful than bdp/bdh for
+        estimates, financials, cross-sectional screens, and derived calculations.
+
+        BQL syntax:
+          get(<fields>) for(<universe>)
+
+        Universe examples:
+          ['AAPL US Equity', 'MSFT US Equity']   — explicit list
+          members('SPX Index')                    — index members
+          filter(members('SPX Index'), PE_RATIO < 15)  — filtered universe
+
+        Field examples (cross-sectional, one value per security):
+          PX_LAST, PE_RATIO, CUR_MKT_CAP, NAME
+          BEST_EPS(fperiod='1Q2025')              — consensus estimate for a specific quarter
+          BEST_EPS(fperiod='1FY')                 — next fiscal year estimate
+          IS_EPS(fperiod='1Q2024')                — reported EPS for a past quarter
+
+        Field examples (time series, returns rows per date):
+          PX_LAST(dates=range(-1Y, 0D))                          — 1 year of daily prices
+          IS_EPS(periodicity=QUARTERLY, dates=range(-8Q, 0Q))    — 8 quarters of reported EPS
+          BEST_EPS(periodicity=QUARTERLY, dates=range(-8Q, 0Q))  — 8 quarters of consensus EPS
+
+        Multiple fields in one query:
+          get(PX_LAST, PE_RATIO, BEST_EPS(fperiod='1FY')) for(members('SPX Index'))
+
+        Returns a dict keyed by field/expression name, each containing a list of rows
+        with 'id' (security), 'value', and any secondary columns (e.g. 'DATE', 'PERIOD').
+        """
+    )
+    async def bql(query: str) -> str:
+        session = _make_session()
+        try:
+            if not session.openService(_BQLSVC):
+                raise RuntimeError("Failed to open //blp/bqlsvc — BQL may require a separate entitlement")
+            svc = session.getService(_BQLSVC)
+            req = svc.createRequest("sendQuery")
+            req.set("expression", query)
+            session.sendRequest(req)
+
+            tables: dict = {}
+            for msg in _drain(session):
+                if not msg.hasElement("results"):
+                    continue
+                results = msg.getElement("results")
+                for i in range(results.numValues()):
+                    res = results.getValueAsElement(i)
+                    name = res.getElementAsString("name") if res.hasElement("name") else str(i)
+
+                    # ID column
+                    id_col = res.getElement("idColumn")
+                    id_vals = _to_value(id_col.getElement("values"))
+
+                    # Primary values column
+                    val_col = res.getElement("valuesColumn")
+                    val_vals = _to_value(val_col.getElement("values"))
+
+                    # Secondary columns (DATE, PERIOD, etc. for time-series results)
+                    sec_cols: dict = {}
+                    if res.hasElement("secondaryColumns"):
+                        sc = res.getElement("secondaryColumns")
+                        for j in range(sc.numValues()):
+                            col = sc.getValueAsElement(j)
+                            col_name = col.getElementAsString("name")
+                            sec_cols[col_name] = _to_value(col.getElement("values"))
+
+                    rows = []
+                    for k, (id_v, val_v) in enumerate(zip(id_vals, val_vals)):
+                        row: dict = {"id": id_v, "value": val_v}
+                        for col_name, col_vals in sec_cols.items():
+                            row[col_name] = col_vals[k] if k < len(col_vals) else None
+                        rows.append(row)
+
+                    tables[name] = rows
+
+            return json.dumps(tables)
         finally:
             session.stop()
 
