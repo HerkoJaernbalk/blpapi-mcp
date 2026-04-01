@@ -13,6 +13,7 @@ from . import types
 _REFDATA = "//blp/refdata"
 _EXRSVC  = "//blp/exrsvc"
 _BQLSVC  = "//blp/bqlsvc"
+_NEWSSVC = "//blp/newsSearch"
 _TIMEOUT = 10_000  # ms
 
 # Intraday session time windows (HH:MM:SS)
@@ -645,6 +646,70 @@ def serve(args: types.StartupArgs):
                     tables[name] = rows
 
             return json.dumps(tables)
+        finally:
+            session.stop()
+
+    @mcp.tool(
+        name="bloomberg_news",
+        description="""Search Bloomberg news headlines for a given security.
+        Uses the //blp/newsSearch service to retrieve recent news articles.
+
+        ticker: Bloomberg security identifier, e.g. 'AZN LN Equity', 'AAPL US Equity'
+        max_results: number of headlines to return (default 20)
+        start_date: ISO date string to filter news from (e.g. '2024-01-01' or '2024-01-01T09:00:00')
+        end_date: ISO date string to filter news to (e.g. '2024-12-31' or '2024-12-31T23:59:59')
+
+        Returns a list of news items, each containing:
+          headline     — article headline text
+          published_at — ISO timestamp of publication
+          source       — news source code (e.g. 'BN', 'Reuters', 'WSJ')
+          story_id     — unique story identifier for potential full-text retrieval
+
+        Example: Get 10 most recent headlines for AstraZeneca:
+          ticker='AZN LN Equity', max_results=10
+
+        Example: Get Apple news from Q1 2024:
+          ticker='AAPL US Equity', start_date='2024-01-01', end_date='2024-03-31'
+        """
+    )
+    async def bloomberg_news(ticker: str, max_results: int = 20, start_date: str | None = None, end_date: str | None = None) -> str:
+        session = _make_session()
+        try:
+            if not session.openService(_NEWSSVC):
+                raise RuntimeError(f"Failed to open {_NEWSSVC}")
+            svc = session.getService(_NEWSSVC)
+            req = svc.createRequest("newsSearchRequest")
+
+            where = req.getElement("where")
+            sec_ids = where.getElement("securityIdentifiers")
+            sec_ids.appendValue(ticker)
+
+            if start_date or end_date:
+                date_range = where.getElement("dateRange")
+                if start_date:
+                    sd = dt.datetime.fromisoformat(start_date)
+                    date_range.setElement("startDateTime", blpapi.datetime(sd.year, sd.month, sd.day, sd.hour, sd.minute, sd.second))
+                if end_date:
+                    ed = dt.datetime.fromisoformat(end_date)
+                    date_range.setElement("endDateTime", blpapi.datetime(ed.year, ed.month, ed.day, ed.hour, ed.minute, ed.second))
+
+            req.set("maxResults", max_results)
+            session.sendRequest(req)
+
+            news_items = []
+            for msg in _drain(session):
+                if not msg.hasElement("results"):
+                    continue
+                results_elem = msg.getElement("results")
+                for i in range(results_elem.numValues()):
+                    item = results_elem.getValueAsElement(i)
+                    news_items.append({
+                        "headline":     item.getElementAsString("headline")       if item.hasElement("headline")     else None,
+                        "published_at": _to_value(item.getElement("publishedAt")) if item.hasElement("publishedAt")  else None,
+                        "source":       item.getElementAsString("source")         if item.hasElement("source")       else None,
+                        "story_id":     item.getElementAsString("storyId")        if item.hasElement("storyId")      else None,
+                    })
+            return json.dumps(news_items)
         finally:
             session.stop()
 
