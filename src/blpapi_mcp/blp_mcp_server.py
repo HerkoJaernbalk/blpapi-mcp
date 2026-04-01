@@ -675,40 +675,71 @@ def serve(args: types.StartupArgs):
     async def bloomberg_news(ticker: str, max_results: int = 20, start_date: str | None = None, end_date: str | None = None) -> str:
         session = _make_session()
         try:
-            if not session.openService(_NEWSSVC):
-                raise RuntimeError(f"Failed to open {_NEWSSVC}")
-            svc = session.getService(_NEWSSVC)
-            req = svc.createRequest("newsSearchRequest")
+            # Primary path: dedicated //blp/newsSearch service
+            if session.openService(_NEWSSVC):
+                svc = session.getService(_NEWSSVC)
+                req = svc.createRequest("newsSearchRequest")
 
-            where = req.getElement("where")
-            sec_ids = where.getElement("securityIdentifiers")
-            sec_ids.appendValue(ticker)
+                where = req.getElement("where")
+                where.getElement("securityIdentifiers").appendValue(ticker)
 
-            if start_date or end_date:
-                date_range = where.getElement("dateRange")
-                if start_date:
-                    sd = dt.datetime.fromisoformat(start_date)
-                    date_range.setElement("startDateTime", blpapi.datetime(sd.year, sd.month, sd.day, sd.hour, sd.minute, sd.second))
-                if end_date:
-                    ed = dt.datetime.fromisoformat(end_date)
-                    date_range.setElement("endDateTime", blpapi.datetime(ed.year, ed.month, ed.day, ed.hour, ed.minute, ed.second))
+                if start_date or end_date:
+                    date_range = where.getElement("dateRange")
+                    if start_date:
+                        sd = dt.datetime.fromisoformat(start_date)
+                        date_range.setElement("startDateTime", blpapi.datetime(sd.year, sd.month, sd.day, sd.hour, sd.minute, sd.second))
+                    if end_date:
+                        ed = dt.datetime.fromisoformat(end_date)
+                        date_range.setElement("endDateTime", blpapi.datetime(ed.year, ed.month, ed.day, ed.hour, ed.minute, ed.second))
 
-            req.set("maxResults", max_results)
+                req.set("maxResults", max_results)
+                session.sendRequest(req)
+
+                news_items = []
+                for msg in _drain(session):
+                    if not msg.hasElement("results"):
+                        continue
+                    results_elem = msg.getElement("results")
+                    for i in range(results_elem.numValues()):
+                        item = results_elem.getValueAsElement(i)
+                        news_items.append({
+                            "headline":     item.getElementAsString("headline")       if item.hasElement("headline")     else None,
+                            "published_at": _to_value(item.getElement("publishedAt")) if item.hasElement("publishedAt")  else None,
+                            "source":       item.getElementAsString("source")         if item.hasElement("source")       else None,
+                            "story_id":     item.getElementAsString("storyId")        if item.hasElement("storyId")      else None,
+                        })
+                return json.dumps(news_items)
+
+            # Fallback: NEWS_STORY bulk field via //blp/refdata (works on all Bloomberg connections)
+            if not session.openService(_REFDATA):
+                return json.dumps({"error": "News service not available on this Bloomberg connection"})
+            svc = session.getService(_REFDATA)
+            req = svc.createRequest("ReferenceDataRequest")
+            req.append("securities", ticker)
+            req.append("fields", "NEWS_STORY")
+            ovr = req.getElement("overrides")
+            o = ovr.appendElement()
+            o.setElement("fieldId", "MAX_NEWS_STORIES")
+            o.setElement("value", str(max_results))
             session.sendRequest(req)
 
             news_items = []
             for msg in _drain(session):
-                if not msg.hasElement("results"):
-                    continue
-                results_elem = msg.getElement("results")
-                for i in range(results_elem.numValues()):
-                    item = results_elem.getValueAsElement(i)
-                    news_items.append({
-                        "headline":     item.getElementAsString("headline")       if item.hasElement("headline")     else None,
-                        "published_at": _to_value(item.getElement("publishedAt")) if item.hasElement("publishedAt")  else None,
-                        "source":       item.getElementAsString("source")         if item.hasElement("source")       else None,
-                        "story_id":     item.getElementAsString("storyId")        if item.hasElement("storyId")      else None,
-                    })
+                sec_data = msg.getElement("securityData")
+                for i in range(sec_data.numValues()):
+                    sec = sec_data.getValueAsElement(i)
+                    fd = sec.getElement("fieldData")
+                    if not fd.hasElement("NEWS_STORY"):
+                        continue
+                    rows = fd.getElement("NEWS_STORY")
+                    for j in range(rows.numValues()):
+                        row = rows.getValueAsElement(j)
+                        news_items.append({
+                            "headline":     row.getElementAsString("STORY_HEADLINE")     if row.hasElement("STORY_HEADLINE")     else None,
+                            "published_at": _to_value(row.getElement("STORY_DATE_TIME")) if row.hasElement("STORY_DATE_TIME")    else None,
+                            "source":       row.getElementAsString("NEWS_PROVIDER_CODE") if row.hasElement("NEWS_PROVIDER_CODE") else None,
+                            "story_id":     row.getElementAsString("STORY_ID")           if row.hasElement("STORY_ID")           else None,
+                        })
             return json.dumps(news_items)
         finally:
             session.stop()
