@@ -702,45 +702,16 @@ def serve(args: types.StartupArgs):
                     results_elem = msg.getElement("results")
                     for i in range(results_elem.numValues()):
                         item = results_elem.getValueAsElement(i)
+                        id_elem = item.getElement("id") if item.hasElement("id") else None
                         news_items.append({
-                            "headline":     item.getElementAsString("headline")       if item.hasElement("headline")     else None,
-                            "published_at": _to_value(item.getElement("publishedAt")) if item.hasElement("publishedAt")  else None,
-                            "source":       item.getElementAsString("source")         if item.hasElement("source")       else None,
-                            "story_id":     item.getElementAsString("storyId")        if item.hasElement("storyId")      else None,
+                            "headline":     item.getElementAsString("headline")       if item.hasElement("headline")    else None,
+                            "published_at": _to_value(item.getElement("publishedAt")) if item.hasElement("publishedAt") else None,
+                            "source":       item.getElementAsString("source")         if item.hasElement("source")      else None,
+                            "story_id":     id_elem.getElementAsString("value")       if id_elem is not None            else None,
                         })
                 return json.dumps(news_items)
 
-            # Fallback: NEWS_STORY bulk field via //blp/refdata (works on all Bloomberg connections)
-            if not session.openService(_REFDATA):
-                return json.dumps({"error": "News service not available on this Bloomberg connection"})
-            svc = session.getService(_REFDATA)
-            req = svc.createRequest("ReferenceDataRequest")
-            req.append("securities", ticker)
-            req.append("fields", "NEWS_STORY")
-            ovr = req.getElement("overrides")
-            o = ovr.appendElement()
-            o.setElement("fieldId", "MAX_NEWS_STORIES")
-            o.setElement("value", str(max_results))
-            session.sendRequest(req)
-
-            news_items = []
-            for msg in _drain(session):
-                sec_data = msg.getElement("securityData")
-                for i in range(sec_data.numValues()):
-                    sec = sec_data.getValueAsElement(i)
-                    fd = sec.getElement("fieldData")
-                    if not fd.hasElement("NEWS_STORY"):
-                        continue
-                    rows = fd.getElement("NEWS_STORY")
-                    for j in range(rows.numValues()):
-                        row = rows.getValueAsElement(j)
-                        news_items.append({
-                            "headline":     row.getElementAsString("STORY_HEADLINE")     if row.hasElement("STORY_HEADLINE")     else None,
-                            "published_at": _to_value(row.getElement("STORY_DATE_TIME")) if row.hasElement("STORY_DATE_TIME")    else None,
-                            "source":       row.getElementAsString("NEWS_PROVIDER_CODE") if row.hasElement("NEWS_PROVIDER_CODE") else None,
-                            "story_id":     row.getElementAsString("STORY_ID")           if row.hasElement("STORY_ID")           else None,
-                        })
-            return json.dumps(news_items)
+            return json.dumps({"error": "//blp/newsSearch service not available on this Bloomberg connection"})
         finally:
             session.stop()
 
