@@ -117,8 +117,45 @@ def serve(args: types.StartupArgs):
           Quality:     RETURN_ON_EQUITY, RETURN_ON_ASSET, GROSS_MARGIN, TOT_DEBT_TO_TOT_EQY
           Info:        NAME, TICKER, GICS_SECTOR_NAME, GICS_INDUSTRY_NAME, COUNTRY_ISO, CRNCY, EXCH_CODE
           Risk:        VOLATILITY_30D, VOLATILITY_90D, BETA_ADJUSTED_OVERRIDABLE, SHORT_INT_RATIO
-          Estimates:   BEST_TARGET_PRICE, BEST_EPS, BEST_EPS_NXT_YR, ANALYST_RATING
+          Estimates:   BEST_TARGET_PRICE, BEST_EPS, ANALYST_RATING
           Ownership:   EQY_INST_PCT_SH_OUT, SHARES_OUTSTANDING, FLOAT_SHARES_OUTSTANDING
+
+        Consensus estimates (forward-looking, use with BEST_FPERIOD_OVERRIDE):
+          BEST_EPS        — consensus EPS
+          BEST_SALES      — consensus revenue
+          BEST_EBIT       — consensus operating profit/EBIT (matches Terminal display)
+          BEST_EBITDA     — consensus EBITDA
+          BEST_NET_INCOME — consensus net income
+
+        Historical actuals (comparable/adjusted):
+          IS_COMP_EPS_ADJUSTED — comparable EPS (excludes one-time items)
+          IS_COMPARABLE_EBIT   — comparable EBIT (clean operating profit)
+          These represent analyst-agreed "real earnings" for performance analysis.
+
+        IMPORTANT field rules:
+          - For consensus operating profit use BEST_EBIT, not BEST_OPER_INC
+          - BEST_EBIT matches what the Bloomberg Terminal displays
+          - NEVER use BEST_EPS_NXT_YR — use BEST_EPS with BEST_FPERIOD_OVERRIDE instead
+          - IS_COMP_* fields are for historical actuals only
+
+        kwargs: Bloomberg field overrides as key/value pairs.
+
+        BEST_FPERIOD_OVERRIDE format:
+          "2026Y"  — fiscal year 2026
+          "2027Y"  — fiscal year 2027
+          "2026Q1" — Q1 2026
+          "2026Q2" — Q2 2026
+          "2027Q4" — Q4 2027
+
+        Example — FY2026 and FY2027 consensus estimates:
+          bdp(tickers=['VOLVB SS Equity'],
+              flds=['BEST_EPS', 'BEST_SALES', 'BEST_EBIT'],
+              kwargs={'BEST_FPERIOD_OVERRIDE': '2026Y'})
+
+        Example — Q1 2026 consensus estimates:
+          bdp(tickers=['VOLVB SS Equity'],
+              flds=['BEST_EPS', 'BEST_SALES', 'BEST_EBIT'],
+              kwargs={'BEST_FPERIOD_OVERRIDE': '2026Q1'})
         """
     )
     async def bdp(tickers: list[str], flds: list[str], kwargs: dict[str, object] | None = None) -> str:
