@@ -629,6 +629,12 @@ def serve(args: types.StartupArgs):
                 for mi, msg in enumerate(msgs_in_event):
                     elem_names = [str(msg.getElement(i).name()) for i in range(msg.numElements())]
                     debug.append(f"  msg[{mi}] elements={elem_names}")
+                    debug.append(f"  msg[{mi}] full={str(msg)[:500]}")
+
+                    if msg.hasElement("responseError"):
+                        debug.append(f"  responseError={str(msg.getElement('responseError'))[:500]}")
+                    if msg.hasElement("reason"):
+                        debug.append(f"  reason={str(msg.getElement('reason'))[:500]}")
 
                     if msg.hasElement("results"):
                         results = msg.getElement("results")
