@@ -1,6 +1,7 @@
 
 import json
 import datetime as dt
+import socket
 
 import blpapi
 import blpapi.version
@@ -716,5 +717,9 @@ def serve(args: types.StartupArgs):
             session.stop()
 
     if args.transport == types.Transport.SSE:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _s:
+            _s.connect(("8.8.8.8", 80))
+            local_ip = _s.getsockname()[0]
         print(f"Bloomberg MCP server listening on http://{args.host}:{args.port}/sse")
+        print(f"Connect clients to: http://{local_ip}:{args.port}/sse")
     mcp.run(transport=args.transport.value)
