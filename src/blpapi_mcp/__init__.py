@@ -1,5 +1,6 @@
 
 import argparse
+import os
 import typing
 
 from . import types
@@ -12,11 +13,11 @@ def parse_args():
   parser.add_argument("--port", type=int, default=None)
 
   args = parser.parse_args()
-  is_sse = args.sse or args.host != None or args.port != None
+  is_sse = args.sse or args.host is not None or args.port is not None or os.environ.get("SSE_MODE", "").lower() == "true"
 
   transport = types.Transport.SSE if is_sse else types.Transport.STDIO
-  host = args.host if args.host != None else "127.0.0.1"
-  port = args.port if args.port != None else 8000
+  host = args.host or os.environ.get("HOST", "0.0.0.0")
+  port = args.port or int(os.environ.get("PORT", 8080))
   return types.StartupArgs(transport=transport, host=host, port=port)
 
 def main() -> None:

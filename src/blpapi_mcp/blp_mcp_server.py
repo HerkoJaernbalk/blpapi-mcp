@@ -715,4 +715,6 @@ def serve(args: types.StartupArgs):
         finally:
             session.stop()
 
+    if args.transport == types.Transport.SSE:
+        print(f"Bloomberg MCP server listening on http://{args.host}:{args.port}/sse")
     mcp.run(transport=args.transport.value)
