@@ -612,7 +612,9 @@ def serve(args: types.StartupArgs):
             session.sendRequest(req)
 
             tables: dict = {}
+            raw_msgs = []
             for msg in _drain(session):
+                raw_msgs.append({str(msg.getElement(i).name()): str(msg.getElement(i)) for i in range(msg.numElements())})
                 if not msg.hasElement("results"):
                     continue
                 results = msg.getElement("results")
@@ -646,6 +648,8 @@ def serve(args: types.StartupArgs):
 
                     tables[name] = rows
 
+            if not tables:
+                return json.dumps({"debug_raw_messages": raw_msgs})
             return json.dumps(tables)
         finally:
             session.stop()
