@@ -5,7 +5,7 @@ import typing
 
 
 class Transport(enum.Enum):
-  SSE="sse"
+  HTTP="streamable-http"
   STDIO="stdio"
 
 class StartupArgs:
