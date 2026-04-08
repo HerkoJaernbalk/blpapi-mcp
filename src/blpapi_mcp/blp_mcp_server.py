@@ -602,55 +602,74 @@ def serve(args: types.StartupArgs):
         """
     )
     async def bql(query: str) -> str:
+        debug: list = []
         session = _make_session()
         try:
-            if not session.openService(_BQLSVC):
-                raise RuntimeError("Failed to open //blp/bqlsvc — BQL may require a separate entitlement")
+            debug.append("session started")
+            opened = session.openService(_BQLSVC)
+            debug.append(f"openService({_BQLSVC}) = {opened}")
+            if not opened:
+                return json.dumps({"error": f"Failed to open {_BQLSVC}", "debug": debug})
+
             svc = session.getService(_BQLSVC)
             req = svc.createRequest("sendQuery")
             req.set("expression", query)
+            debug.append(f"sending request: {str(req)}")
             session.sendRequest(req)
 
             tables: dict = {}
-            raw_msgs = []
-            for msg in _drain(session):
-                raw_msgs.append({str(msg.getElement(i).name()): str(msg.getElement(i)) for i in range(msg.numElements())})
-                if not msg.hasElement("results"):
-                    continue
-                results = msg.getElement("results")
-                for i in range(results.numValues()):
-                    res = results.getValueAsElement(i)
-                    name = res.getElementAsString("name") if res.hasElement("name") else str(i)
+            event_count = 0
+            while True:
+                ev = session.nextEvent(_TIMEOUT)
+                etype = ev.eventType()
+                msgs_in_event = list(ev)
+                debug.append(f"event[{event_count}] type={etype} msgs={len(msgs_in_event)}")
+                event_count += 1
 
-                    # ID column
-                    id_col = res.getElement("idColumn")
-                    id_vals = _to_value(id_col.getElement("values"))
+                for mi, msg in enumerate(msgs_in_event):
+                    elem_names = [str(msg.getElement(i).name()) for i in range(msg.numElements())]
+                    debug.append(f"  msg[{mi}] elements={elem_names}")
 
-                    # Primary values column
-                    val_col = res.getElement("valuesColumn")
-                    val_vals = _to_value(val_col.getElement("values"))
+                    if msg.hasElement("results"):
+                        results = msg.getElement("results")
+                        debug.append(f"  results.numValues={results.numValues()}")
+                        for i in range(results.numValues()):
+                            res = results.getValueAsElement(i)
+                            name = res.getElementAsString("name") if res.hasElement("name") else str(i)
+                            id_col = res.getElement("idColumn")
+                            id_vals = _to_value(id_col.getElement("values"))
+                            val_col = res.getElement("valuesColumn")
+                            val_vals = _to_value(val_col.getElement("values"))
+                            sec_cols: dict = {}
+                            if res.hasElement("secondaryColumns"):
+                                sc = res.getElement("secondaryColumns")
+                                for j in range(sc.numValues()):
+                                    col = sc.getValueAsElement(j)
+                                    col_name = col.getElementAsString("name")
+                                    sec_cols[col_name] = _to_value(col.getElement("values"))
+                            rows = []
+                            for k, (id_v, val_v) in enumerate(zip(id_vals, val_vals)):
+                                row: dict = {"id": id_v, "value": val_v}
+                                for col_name, col_vals in sec_cols.items():
+                                    row[col_name] = col_vals[k] if k < len(col_vals) else None
+                                rows.append(row)
+                            tables[name] = rows
+                    else:
+                        for i in range(msg.numElements()):
+                            debug.append(f"    {msg.getElement(i).name()} = {str(msg.getElement(i))[:200]}")
 
-                    # Secondary columns (DATE, PERIOD, etc. for time-series results)
-                    sec_cols: dict = {}
-                    if res.hasElement("secondaryColumns"):
-                        sc = res.getElement("secondaryColumns")
-                        for j in range(sc.numValues()):
-                            col = sc.getValueAsElement(j)
-                            col_name = col.getElementAsString("name")
-                            sec_cols[col_name] = _to_value(col.getElement("values"))
-
-                    rows = []
-                    for k, (id_v, val_v) in enumerate(zip(id_vals, val_vals)):
-                        row: dict = {"id": id_v, "value": val_v}
-                        for col_name, col_vals in sec_cols.items():
-                            row[col_name] = col_vals[k] if k < len(col_vals) else None
-                        rows.append(row)
-
-                    tables[name] = rows
+                if etype == blpapi.Event.RESPONSE:
+                    break
+                if etype == blpapi.Event.TIMEOUT:
+                    debug.append("TIMED OUT")
+                    break
 
             if not tables:
-                return json.dumps({"debug_raw_messages": raw_msgs})
-            return json.dumps(tables)
+                return json.dumps({"error": "no results parsed", "debug": debug})
+            return json.dumps({"data": tables, "debug": debug})
+        except Exception as e:
+            debug.append(f"exception: {type(e).__name__}: {e}")
+            return json.dumps({"error": str(e), "debug": debug})
         finally:
             session.stop()
 
