@@ -739,6 +739,8 @@ def serve(args: types.StartupArgs):
 
                 news_items = []
                 for msg in _drain(session):
+                    if msg.hasElement("responseError"):
+                        raise RuntimeError(str(msg.getElement("responseError")))
                     if not msg.hasElement("results"):
                         continue
                     results_elem = msg.getElement("results")
