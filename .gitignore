@@ -21,3 +21,6 @@ wheels/
 # Windows
 Thumbs.db
 desktop.ini
+
+# Local notes
+SETUP_CLIENT.md
