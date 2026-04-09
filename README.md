@@ -58,6 +58,25 @@ Add the following, replacing `<your-username>` with your Windows username:
 
 Restart Claude Desktop. If everything is set up correctly, you should see Bloomberg listed as a connected tool.
 
+## Running as a Network Server (HTTP mode)
+
+Instead of running as a local subprocess, you can run blpapi-mcp as an HTTP server on the Bloomberg machine and connect to it from other computers on the same network.
+
+### On the Bloomberg machine
+
+```bash
+blpapi-mcp --http
+```
+
+The server will print:
+```
+Bloomberg MCP server listening on http://0.0.0.0:8080/mcp
+Connect clients to: http://192.168.x.x:8080/mcp
+```
+
+Use the IP from the second line in the client config below.
+
+
 ## Access Bloomberg on the Go
 
 Once Claude Desktop is running on your Bloomberg Terminal machine, you can access Bloomberg data from anywhere using [Claude for iPhone](https://apps.apple.com/app/claude-ai/id6473753684) with the **Dispatch** feature.
