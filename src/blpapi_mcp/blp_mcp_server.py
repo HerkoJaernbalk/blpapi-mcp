@@ -198,7 +198,7 @@ def serve(args: types.StartupArgs):
         Ticker format: same as bdp (e.g. 'AAPL US Equity')
 
         Common fields:
-          Holders:      TOP_20_HOLDERS (top 20 institutional holders with % owned)
+          Holders:      TOP_20_HOLDERS_PUBLIC_FILINGS (top 20 institutional holders with % owned)
                         FUND_MNGR_AND_PFOLIO (fund managers and portfolios)
           Analysts:     ANALYST_RECOMMENDATIONS (buy/hold/sell breakdown and changes)
                         BEST_ANALYST_RATING (individual analyst ratings and targets)
