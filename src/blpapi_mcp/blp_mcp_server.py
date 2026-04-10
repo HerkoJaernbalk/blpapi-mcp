@@ -1,4 +1,6 @@
 
+import csv
+import io
 import json
 import datetime as dt
 import socket
@@ -91,6 +93,19 @@ def _parse_datetime(date_str: str, time_str: str) -> blpapi.datetime:
     return blpapi.datetime(d.year, d.month, d.day, d.hour, d.minute, d.second)
 
 
+def _csv(rows: list[dict]) -> str:
+    """Serialize a list of dicts to CSV. More token-efficient than JSON for LLMs."""
+    if not rows:
+        return ""
+    keys = list(dict.fromkeys(k for row in rows for k in row))
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow(keys)
+    for row in rows:
+        w.writerow(["" if row.get(k) is None else row.get(k, "") for k in keys])
+    return out.getvalue()
+
+
 def serve(args: types.StartupArgs):
     mcp = FastMCP("blpapi-mcp", host=args.host, port=args.port)
     logger = get_logger(__name__)
@@ -120,11 +135,12 @@ def serve(args: types.StartupArgs):
           Ownership:   EQY_INST_PCT_SH_OUT, SHARES_OUTSTANDING, FLOAT_SHARES_OUTSTANDING
 
         Consensus estimates (forward-looking, use with BEST_FPERIOD_OVERRIDE):
-          BEST_EPS        — consensus EPS
-          BEST_SALES      — consensus revenue
-          BEST_EBIT       — consensus operating profit/EBIT (matches Terminal display)
-          BEST_EBITDA     — consensus EBITDA
-          BEST_NET_INCOME — consensus net income
+          BEST_EPS             — consensus EPS
+          BEST_SALES           — consensus revenue
+          BEST_EBIT            — consensus operating profit/EBIT (matches Terminal display)
+          BEST_EBITDA          — consensus EBITDA
+          BEST_NET_INCOME      — consensus net income
+          BEST_EV_TO_BEST_EBITDA — consensus EV/EBITDA multiple
 
         Historical actuals (comparable/adjusted):
           IS_COMP_EPS_ADJUSTED — comparable EPS (excludes one-time items)
@@ -186,7 +202,8 @@ def serve(args: types.StartupArgs):
                         f: (_to_value(fd.getElement(f)) if fd.hasElement(f) else None)
                         for f in flds
                     }
-            return json.dumps(result)
+            rows = [{"ticker": t, **fields} for t, fields in result.items()]
+            return _csv(rows)
         finally:
             session.stop()
 
@@ -241,7 +258,18 @@ def serve(args: types.StartupArgs):
                         f: (_to_value(fd.getElement(f)) if fd.hasElement(f) else None)
                         for f in flds
                     }
-            return json.dumps(result)
+            rows = []
+            for ticker, fields in result.items():
+                for field, data in fields.items():
+                    if isinstance(data, list):
+                        for item in data:
+                            if isinstance(item, dict):
+                                rows.append({"ticker": ticker, "field": field, **item})
+                            else:
+                                rows.append({"ticker": ticker, "field": field, "value": item})
+                    else:
+                        rows.append({"ticker": ticker, "field": field, "value": data})
+            return _csv(rows)
         finally:
             session.stop()
 
@@ -312,7 +340,8 @@ def serve(args: types.StartupArgs):
                         row[f] = _to_value(row_elem.getElement(f)) if row_elem.hasElement(f) else None
                     rows.append(row)
                 result[ticker] = rows
-            return json.dumps(result)
+            all_rows = [{"ticker": ticker, **row} for ticker, rows in result.items() for row in rows]
+            return _csv(all_rows)
         finally:
             session.stop()
 
@@ -362,7 +391,7 @@ def serve(args: types.StartupArgs):
                         "volume":    bar.getElementAsInteger("volume"),
                         "numEvents": bar.getElementAsInteger("numEvents"),
                     })
-            return json.dumps(bars)
+            return _csv(bars)
         finally:
             blp_session.stop()
 
@@ -412,7 +441,7 @@ def serve(args: types.StartupArgs):
                         "value": tick.getElementAsFloat("value"),
                         "size":  tick.getElementAsInteger("size") if tick.hasElement("size") else None,
                     })
-            return json.dumps(ticks)
+            return _csv(ticks)
         finally:
             blp_session.stop()
 
@@ -466,7 +495,17 @@ def serve(args: types.StartupArgs):
                     t = sec.getElementAsString("security")
                     fd = sec.getElement("fieldData")
                     result[t] = _to_value(fd.getElement(fld)) if fd.hasElement(fld) else None
-            return json.dumps(result)
+            rows = []
+            for ticker, data in result.items():
+                if isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict):
+                            rows.append({"ticker": ticker, **item})
+                        else:
+                            rows.append({"ticker": ticker, "value": item})
+                else:
+                    rows.append({"ticker": ticker, "value": data})
+            return _csv(rows)
         finally:
             session.stop()
 
@@ -513,7 +552,17 @@ def serve(args: types.StartupArgs):
                     ticker = sec.getElementAsString("security")
                     fd = sec.getElement("fieldData")
                     result[ticker] = _to_value(fd.getElement(fld)) if fd.hasElement(fld) else []
-            return json.dumps(result)
+            rows = []
+            for ticker, data in result.items():
+                if isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict):
+                            rows.append({"ticker": ticker, **item})
+                        else:
+                            rows.append({"ticker": ticker, "value": item})
+                else:
+                    rows.append({"ticker": ticker, "value": data})
+            return _csv(rows)
         finally:
             session.stop()
 
@@ -552,7 +601,9 @@ def serve(args: types.StartupArgs):
                     data = msg.getElement("results")
                     for i in range(data.numValues()):
                         results.append(_to_value(data.getValueAsElement(i)))
-            return json.dumps(results)
+            if results and isinstance(results[0], dict):
+                return _csv(results)
+            return _csv([{"security": r} for r in results])
         finally:
             session.stop()
 
@@ -602,7 +653,8 @@ def serve(args: types.StartupArgs):
                     tv = round((px * vol) / factor, 4) if px and vol else None
                     rows.append({"date": date_val, "PX_LAST": px, "PX_VOLUME": vol, "turnover": tv})
                 result[ticker] = rows
-            return json.dumps(result)
+            all_rows = [{"ticker": ticker, **row} for ticker, rows in result.items() for row in rows]
+            return _csv(all_rows)
         finally:
             session.stop()
 
@@ -686,7 +738,8 @@ def serve(args: types.StartupArgs):
                         rows.append(row)
                     tables[name] = rows
 
-            return json.dumps(tables)
+            rows = [{"field": fname, **row} for fname, field_rows in tables.items() for row in field_rows]
+            return _csv(rows)
         finally:
             session.stop()
 
