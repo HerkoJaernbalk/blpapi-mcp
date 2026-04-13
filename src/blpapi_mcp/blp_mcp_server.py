@@ -810,7 +810,7 @@ def serve(args: types.StartupArgs):
                     f"instrumentListRequest not available on {_INSTRUMENTS}; available: {ops}"
                 )
             op = svc.getOperation("instrumentListRequest")
-            yf_type = op.requestDefinition().getElement("yellowKeyFilter").typeDefinition()
+            yf_type = op.requestDefinition().typeDefinition().getElement("yellowKeyFilter").typeDefinition()
             valid_filters = [yf_type.getEnumerator(i).name() for i in range(yf_type.numEnumerators())]
             print(f"Valid yellowKeyFilter values: {valid_filters}")
             req = svc.createRequest("instrumentListRequest")
