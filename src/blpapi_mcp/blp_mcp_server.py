@@ -848,8 +848,8 @@ def serve(args: types.StartupArgs):
         query: search string e.g. 'USD swap' or 'EUR govt'
         max_results: number of results to return, default 20
 
-        Returns matching curve identifiers and descriptions.
-        Useful for discovering curve tickers to use in fixed income analytics.
+        Returns description, country, currency, curveid, type, subtype, publisher, bbgid.
+        Useful for discovering curve identifiers to use in fixed income analytics.
         """
     )
     async def curve_list(query: str, max_results: int = 20) -> str:
@@ -878,11 +878,12 @@ def serve(args: types.StartupArgs):
                     res = msg.getElement("results")
                     for i in range(res.numValues()):
                         item = res.getValueAsElement(i)
-                        row = {}
-                        if item.hasElement("curve"):
-                            row["curve"] = item.getElementAsString("curve")
-                        if item.hasElement("description"):
-                            row["description"] = item.getElementAsString("description")
+                        row = {
+                            f: item.getElementAsString(f)
+                            for f in ("description", "country", "currency", "curveid",
+                                      "type", "subtype", "publisher", "bbgid")
+                            if item.hasElement(f)
+                        }
                         results.append(row)
                 else:
                     elements = [str(msg.getElement(i).name()) for i in range(msg.numElements())]
@@ -932,10 +933,9 @@ def serve(args: types.StartupArgs):
                     for i in range(res.numValues()):
                         item = res.getValueAsElement(i)
                         row = {}
-                        if item.hasElement("parseky"):
-                            row["parseky"] = item.getElementAsString("parseky")
-                        if item.hasElement("name"):
-                            row["name"] = item.getElementAsString("name")
+                        for f in ("parseky", "name", "ticker"):
+                            if item.hasElement(f):
+                                row[f] = item.getElementAsString(f)
                         results.append(row)
                 else:
                     elements = [str(msg.getElement(i).name()) for i in range(msg.numElements())]
