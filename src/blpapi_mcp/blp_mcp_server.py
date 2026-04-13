@@ -94,15 +94,28 @@ def _parse_datetime(date_str: str, time_str: str) -> blpapi.datetime:
 
 
 def _csv(rows: list[dict]) -> str:
-    """Serialize a list of dicts to CSV. More token-efficient than JSON for LLMs."""
+    """Serialize a list of dicts to CSV. Token-efficient format for LLMs."""
     if not rows:
         return ""
     keys = list(dict.fromkeys(k for row in rows for k in row))
+    # Drop columns where every value is None or empty — Bloomberg often returns null placeholders
+    keys = [k for k in keys if any(row.get(k) not in (None, "") for row in rows)]
+    if not keys:
+        return ""
     out = io.StringIO()
     w = csv.writer(out)
     w.writerow(keys)
     for row in rows:
-        w.writerow(["" if row.get(k) is None else row.get(k, "") for k in keys])
+        vals = []
+        for k in keys:
+            v = row.get(k)
+            if v is None:
+                vals.append("")
+            elif isinstance(v, float):
+                vals.append(f"{v:.6g}")  # 6 significant figures, no trailing zeros
+            else:
+                vals.append(v)
+        w.writerow(vals)
     return out.getvalue()
 
 
@@ -202,7 +215,10 @@ def serve(args: types.StartupArgs):
                         f: (_to_value(fd.getElement(f)) if fd.hasElement(f) else None)
                         for f in flds
                     }
-            rows = [{"ticker": t, **fields} for t, fields in result.items()]
+            if len(result) == 1:
+                rows = [fields for fields in result.values()]
+            else:
+                rows = [{"ticker": t, **fields} for t, fields in result.items()]
             return _csv(rows)
         finally:
             session.stop()
@@ -259,16 +275,23 @@ def serve(args: types.StartupArgs):
                         for f in flds
                     }
             rows = []
+            multi_ticker = len(result) > 1
+            multi_field = len(flds) > 1
             for ticker, fields in result.items():
                 for field, data in fields.items():
+                    prefix: dict = {}
+                    if multi_ticker:
+                        prefix["ticker"] = ticker
+                    if multi_field:
+                        prefix["field"] = field
                     if isinstance(data, list):
                         for item in data:
                             if isinstance(item, dict):
-                                rows.append({"ticker": ticker, "field": field, **item})
+                                rows.append({**prefix, **item})
                             else:
-                                rows.append({"ticker": ticker, "field": field, "value": item})
+                                rows.append({**prefix, "value": item})
                     else:
-                        rows.append({"ticker": ticker, "field": field, "value": data})
+                        rows.append({**prefix, "value": data})
             return _csv(rows)
         finally:
             session.stop()
@@ -284,20 +307,9 @@ def serve(args: types.StartupArgs):
         adjust: 'all' (splits+dividends), 'dvd' (dividends only), 'split' (splits only), None
         kwargs: Bloomberg field overrides as key/value pairs (e.g. BEST_FPERIOD_OVERRIDE, EQY_FUND_CRNCY)
 
-        Common fields:
-          OHLCV:       PX_OPEN, PX_HIGH, PX_LOW, PX_LAST, PX_VOLUME
-          Returns:     DAY_TO_DAY_TOT_RETURN_GROSS_DVDS (total return including dividends)
-          Valuation:   PE_RATIO, PX_TO_BOOK_RATIO, EQY_DVD_YLD_IND, EV_TO_T12M_EBITDA
-          Financials:  CUR_MKT_CAP, SALES_REV_TURN, EBITDA, IS_EPS, CF_FREE_CASH_FLOW
-          Estimates:   BEST_EPS, BEST_SALES, BEST_EBITDA, BEST_NET_INCOME (use periodicity='QUARTERLY' or 'YEARLY')
-          Risk:        VOLATILITY_30D, VOLATILITY_90D, BETA_ADJUSTED_OVERRIDABLE
-          FX:          PX_LAST works for currency pairs (e.g. 'EURUSD Curncy')
-
-        Example: Get AAPL quarterly EPS estimates for 2024:
-          tickers=['AAPL US Equity'], flds=['BEST_EPS'], start_date='2024-01-01', end_date='2024-12-31', periodicity='QUARTERLY'
-
-        Example: Get AAPL closing prices for 2024:
-          tickers=['AAPL US Equity'], flds=['PX_LAST'], start_date='2024-01-01', end_date='2024-12-31'
+        Fields: same set as bdp. Useful additions for time series:
+          DAY_TO_DAY_TOT_RETURN_GROSS_DVDS — total return including dividends
+          For estimates use periodicity='QUARTERLY' or 'YEARLY' with BEST_EPS, BEST_SALES etc.
         """
     )
     async def bdh(tickers: list[str], flds: list[str], start_date: str | None = None, end_date: str = "today", periodicity: str = "DAILY", adjust: str | None = None, kwargs: dict[str, object] | None = None) -> str:
@@ -340,7 +352,10 @@ def serve(args: types.StartupArgs):
                         row[f] = _to_value(row_elem.getElement(f)) if row_elem.hasElement(f) else None
                     rows.append(row)
                 result[ticker] = rows
-            all_rows = [{"ticker": ticker, **row} for ticker, rows in result.items() for row in rows]
+            if len(result) == 1:
+                all_rows = [row for rows in result.values() for row in rows]
+            else:
+                all_rows = [{"ticker": ticker, **row} for ticker, rows in result.items() for row in rows]
             return _csv(all_rows)
         finally:
             session.stop()
@@ -407,10 +422,11 @@ def serve(args: types.StartupArgs):
         event_types: list of event types — ['TRADE', 'BID', 'ASK', 'BID_BEST', 'ASK_BEST', 'AT_TRADE']
 
         Use for microstructure analysis, precise execution analysis, or spread analysis.
-        Warning: can return very large datasets for liquid securities.
+        Warning: can return very large datasets for liquid securities — use time_range or max_rows to limit.
+        max_rows: cap output at this many ticks (default 5000); response includes truncation warning if hit.
         """
     )
-    async def bdtick(ticker: str, date: str, session: str = "allday", time_range: tuple[str, ...] | None = None, event_types: list[str] | None = None, kwargs: dict[str, object] | None = None) -> str:
+    async def bdtick(ticker: str, date: str, session: str = "allday", time_range: tuple[str, ...] | None = None, event_types: list[str] | None = None, max_rows: int = 5000, kwargs: dict[str, object] | None = None) -> str:
         blp_session = _make_session()
         try:
             if not blp_session.openService(_REFDATA):
@@ -431,9 +447,15 @@ def serve(args: types.StartupArgs):
                     req.set(k, v)
             blp_session.sendRequest(req)
             ticks = []
+            truncated = False
             for msg in _drain(blp_session):
+                if truncated:
+                    break
                 tick_data = msg.getElement("tickData").getElement("tickData")
                 for i in range(tick_data.numValues()):
+                    if len(ticks) >= max_rows:
+                        truncated = True
+                        break
                     tick = tick_data.getValueAsElement(i)
                     ticks.append({
                         "time":  _to_value(tick.getElement("time")),
@@ -441,7 +463,10 @@ def serve(args: types.StartupArgs):
                         "value": tick.getElementAsFloat("value"),
                         "size":  tick.getElementAsInteger("size") if tick.hasElement("size") else None,
                     })
-            return _csv(ticks)
+            result = _csv(ticks)
+            if truncated:
+                result = f"# WARNING: truncated at {max_rows} rows — use time_range or max_rows to narrow\n" + result
+            return result
         finally:
             blp_session.stop()
 
@@ -496,15 +521,17 @@ def serve(args: types.StartupArgs):
                     fd = sec.getElement("fieldData")
                     result[t] = _to_value(fd.getElement(fld)) if fd.hasElement(fld) else None
             rows = []
-            for ticker, data in result.items():
+            multi_ticker = len(result) > 1
+            for t, data in result.items():
+                prefix = {"ticker": t} if multi_ticker else {}
                 if isinstance(data, list):
                     for item in data:
                         if isinstance(item, dict):
-                            rows.append({"ticker": ticker, **item})
+                            rows.append({**prefix, **item})
                         else:
-                            rows.append({"ticker": ticker, "value": item})
+                            rows.append({**prefix, "value": item})
                 else:
-                    rows.append({"ticker": ticker, "value": data})
+                    rows.append({**prefix, "value": data})
             return _csv(rows)
         finally:
             session.stop()
@@ -553,15 +580,17 @@ def serve(args: types.StartupArgs):
                     fd = sec.getElement("fieldData")
                     result[ticker] = _to_value(fd.getElement(fld)) if fd.hasElement(fld) else []
             rows = []
-            for ticker, data in result.items():
+            multi_ticker = len(result) > 1
+            for t, data in result.items():
+                prefix = {"ticker": t} if multi_ticker else {}
                 if isinstance(data, list):
                     for item in data:
                         if isinstance(item, dict):
-                            rows.append({"ticker": ticker, **item})
+                            rows.append({**prefix, **item})
                         else:
-                            rows.append({"ticker": ticker, "value": item})
+                            rows.append({**prefix, "value": item})
                 else:
-                    rows.append({"ticker": ticker, "value": data})
+                    rows.append({**prefix, "value": data})
             return _csv(rows)
         finally:
             session.stop()
@@ -651,9 +680,12 @@ def serve(args: types.StartupArgs):
                     px = row_elem.getElementAsFloat("PX_LAST") if row_elem.hasElement("PX_LAST") else None
                     vol = row_elem.getElementAsFloat("PX_VOLUME") if row_elem.hasElement("PX_VOLUME") else None
                     tv = round((px * vol) / factor, 4) if px and vol else None
-                    rows.append({"date": date_val, "PX_LAST": px, "PX_VOLUME": vol, "turnover": tv})
+                    rows.append({"date": date_val, "turnover": tv})
                 result[ticker] = rows
-            all_rows = [{"ticker": ticker, **row} for ticker, rows in result.items() for row in rows]
+            if len(result) == 1:
+                all_rows = [row for rows in result.values() for row in rows]
+            else:
+                all_rows = [{"ticker": ticker, **row} for ticker, rows in result.items() for row in rows]
             return _csv(all_rows)
         finally:
             session.stop()
@@ -685,17 +717,9 @@ def serve(args: types.StartupArgs):
         Multiple fields in one query:
           get(PX_LAST, PE_RATIO, BEST_EPS(fperiod='1FY')) for(members('SPX Index'))
 
-        Returns a dict keyed by field/expression name, each containing a list of rows
-        with 'id' (security), 'value', and any secondary columns (e.g. 'DATE', 'PERIOD').
-
-        IMPORTANT — API AUTHORIZATION:
-          BQL requires a separate API entitlement beyond standard Terminal access.
-          If you receive "User not authorized to use BQL":
-            - You have Terminal BQL access but not API access
-            - Contact Bloomberg customer service
-            - Request: "Programmatic BQL access via blpapi API"
-            - Mention you already have Terminal BQNT/BQL access
-            - This is an entitlement issue, not a code issue
+        Returns rows with 'field' (expression name), 'id' (security), 'value',
+        and any secondary columns (e.g. 'DATE', 'PERIOD').
+        Note: BQL requires a separate API entitlement beyond Terminal access.
         """
     )
     async def bql(query: str) -> str:
