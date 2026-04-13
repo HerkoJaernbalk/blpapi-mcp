@@ -19,6 +19,20 @@ _BQLSVC       = "//blp/bqlsvc"
 _INSTRUMENTS  = "//blp/instruments"
 _TIMEOUT = 10_000  # ms
 
+# Bloomberg yellowKeyFilter enum mapping (instrumentListRequest)
+_YK_FILTER = {
+    "Corp":   "YK_FILTER_CORP",
+    "Equity": "YK_FILTER_EQTY",
+    "Govt":   "YK_FILTER_GOVT",
+    "Mtge":   "YK_FILTER_MTGE",
+    "Muni":   "YK_FILTER_MUNI",
+    "Pfd":    "YK_FILTER_PRFD",
+    "Curncy": "YK_FILTER_CURR",
+    "Index":  "YK_FILTER_INDX",
+    "Comdty": "YK_FILTER_CMDT",
+    "MMkt":   "YK_FILTER_MMKT",
+}
+
 # Intraday session time windows (HH:MM:SS)
 _SESSION_TIMES = {
     "allday": ("00:00:00", "23:59:59"),
@@ -791,8 +805,10 @@ def serve(args: types.StartupArgs):
         description="""Search for Bloomberg securities by name or keyword using //blp/instruments.
 
         query: search string e.g. company name "Volvo" or "Apple"
-        typ: asset class filter - 'Corp', 'Equity', 'Govt', 'Mtge', 'Muni', 'Pfd', 'Curncy', 'Index', 'Comdty'
+        typ: asset class filter - 'Corp', 'Equity', 'Govt', 'Mtge', 'Muni', 'Pfd', 'Curncy', 'Index', 'Comdty', 'MMkt'
         max_results: number of results to return, default 20
+
+        Note: returns issuer-level results (e.g. 'VOLV <Corp>'), not individual bond tickers.
 
         Returns matching Bloomberg tickers and security names.
         Useful for discovering bond tickers, options, and other securities where the ticker is not known.
@@ -809,13 +825,12 @@ def serve(args: types.StartupArgs):
                 raise RuntimeError(
                     f"instrumentListRequest not available on {_INSTRUMENTS}; available: {ops}"
                 )
-            op = svc.getOperation("instrumentListRequest")
-            yf_type = op.requestDefinition().typeDefinition().getElement("yellowKeyFilter").typeDefinition()
-            valid_filters = [yf_type.getEnumerator(i).name() for i in range(yf_type.numEnumerators())]
-            print(f"Valid yellowKeyFilter values: {valid_filters}")
+            yk = _YK_FILTER.get(typ)
+            if yk is None:
+                raise ValueError(f"Unknown typ {typ!r}. Valid values: {list(_YK_FILTER)}")
             req = svc.createRequest("instrumentListRequest")
             req.set("query", query)
-            req.set("yellowKeyFilter", f"YK_FILTER_{typ.upper()}")
+            req.set("yellowKeyFilter", yk)
             req.set("maxResults", max_results)
             session.sendRequest(req)
             results = []
