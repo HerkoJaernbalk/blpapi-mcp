@@ -1,83 +1,140 @@
-# Tailscale Funnel Plan
+# Remote Access Plan for Bloomberg MCP Server
 
-## Goal
+The Bloomberg MCP server (`blpapi-mcp --http`) runs on the Bloomberg Terminal machine
+and listens on port 8080. The goal is to make it reachable from other machines so that
+Claude Desktop can connect to it remotely.
 
-Expose the Bloomberg MCP server (running on the Bloomberg Terminal machine at port 8080)
-to the public internet via Tailscale Funnel, so Claude Desktop's remote MCP connector
-can reach it from Anthropic's cloud.
+---
 
-## Why Tailscale Funnel
+## Quick Personal Test (start here)
 
-- Tailscale Funnel makes a local port publicly accessible via a stable `https://<machine>.ts.net` URL
-- No router config, no firewall changes, no dynamic DNS
-- HTTPS is handled automatically (required by Claude Desktop connectors)
-- Free tier is sufficient
+Before committing to any multi-user setup, validate the full remote flow with just
+your own laptop.
 
-## Steps
+**Requirements:** Tailscale installed on both the Bloomberg machine and your laptop.
 
-### 1. Install Tailscale on the Bloomberg machine
+### Steps
 
-Download and install from https://tailscale.com/download
-Log in with a Tailscale account (free tier works).
+1. Install Tailscale on the Bloomberg machine: https://tailscale.com/download
+2. Log in with a Tailscale account (free tier works for 1 user)
+3. Install Tailscale on your laptop and log in with the same account
+4. On the Bloomberg machine, start the MCP server:
+   ```
+   blpapi-mcp --http
+   ```
+5. On the Bloomberg machine, expose it to the tailnet:
+   ```
+   tailscale serve 8080
+   ```
+   Tailscale will output a URL like `https://<machine-name>.<tailnet>.ts.net`
+6. On your laptop, add the MCP endpoint to Claude Desktop:
+   ```
+   https://<machine-name>.<tailnet>.ts.net/mcp
+   ```
+7. In Claude Desktop → Connectors — bloomberg tools should appear
 
-### 2. Enable Funnel
+This is private to your Tailscale network. Nothing is publicly accessible.
 
-Tailscale Funnel must be enabled in the Tailscale admin console:
-- Go to https://login.tailscale.com/admin/dns
-- Enable "HTTPS Certificates" 
-- Go to https://login.tailscale.com/admin/acls
-- Add Funnel to the ACL policy (Tailscale will prompt you if not enabled)
+---
 
-### 3. Start the Bloomberg MCP server
+## Multi-User Option A: Corporate VPN (existing infrastructure)
 
-```bash
-blpapi-mcp --http
-```
+**Use when:** Users are at a company that already has a VPN (Cisco AnyConnect,
+Palo Alto GlobalProtect, Zscaler, etc.)
 
-Confirm it says: `Bloomberg MCP server listening on http://0.0.0.0:8080/mcp`
+**How it works:** The Bloomberg machine sits on the office network. Users connect
+via their existing corporate VPN and access the server by IP or hostname.
 
-### 4. Start Tailscale Funnel
+### Steps
 
-```bash
-tailscale funnel 8080
-```
+1. Start the MCP server on the Bloomberg machine:
+   ```
+   blpapi-mcp --http
+   ```
+2. Ask IT to open port 8080 inbound on the Bloomberg machine from the office network
+3. Ask IT to assign a stable hostname, e.g. `bloomberg-mcp.office.local`
+4. Users add this to Claude Desktop:
+   ```
+   http://bloomberg-mcp.office.local:8080/mcp
+   ```
+   or with the machine's IP:
+   ```
+   http://192.168.x.x:8080/mcp
+   ```
 
-Tailscale will output a public URL like:
-```
-https://<machine-name>.tail1234.ts.net
-```
+**User setup:** none — they're already on the VPN  
+**Cost:** none  
+**Code changes:** none  
+**Auth:** VPN membership (IT controls who gets access)
 
-The MCP endpoint will be:
-```
-https://<machine-name>.tail1234.ts.net/mcp
-```
+---
 
-### 5. Add to Claude Desktop
+## Multi-User Option B: Tailscale as the VPN (no existing infrastructure)
 
-In Claude Desktop → Customize → Connectors → "+" → Add custom connector:
+**Use when:** There is no corporate VPN, or users are spread across different
+networks and companies.
 
-```
-https://<machine-name>.tail1234.ts.net/mcp
-```
+**How it works:** You manage a Tailscale tailnet. You invite each user. The Bloomberg
+machine is exposed only within the tailnet — nothing is public.
 
-No OAuth needed.
+### Steps
 
-### 6. Verify
+1. Create a Tailscale account and set up an organization at https://tailscale.com
+2. On the Bloomberg machine, install Tailscale, log in, then run:
+   ```
+   blpapi-mcp --http
+   tailscale serve 8080
+   ```
+3. Invite each user to your tailnet via the Tailscale admin console
+4. Each user installs Tailscale on their machine and accepts the invite (one-time)
+5. Users add this to Claude Desktop:
+   ```
+   https://<bloomberg-machine>.<tailnet>.ts.net/mcp
+   ```
 
-In Claude Desktop chat, click "+" → Connectors — bloomberg should appear with its tools listed.
+**User setup:** install Tailscale once, accept invite  
+**Cost:** free up to 3 users; $6/user/month (Starter) beyond that (~$120/month for 20 users)  
+**Code changes:** none  
+**Auth:** tailnet membership (you control invites; Tailscale ACLs for fine-grained access)
 
-## Keeping it running
+---
 
-Tailscale Funnel runs as long as the `tailscale funnel` command is active.
-To make it persistent across reboots on Windows, run as a background service or add to Task Scheduler.
+## Multi-User Option C: Tailscale Funnel + OAuth (no client install required)
 
-The Bloomberg MCP server (`blpapi-mcp --http`) also needs to be running — same story,
-add to Task Scheduler if you want it to start automatically.
+**Use when:** Users cannot or will not install any software, or access is needed
+from the cloud (e.g. claude.ai browser-based connectors, not just Claude Desktop).
 
-## Security note
+**How it works:** The Bloomberg machine is exposed publicly via Tailscale Funnel
+(stable HTTPS URL). The MCP server requires OAuth authentication — users log in
+once via browser, Claude Desktop handles token refresh automatically.
 
-The Funnel URL is publicly accessible. There is no authentication on the MCP endpoint.
-Anyone who knows the URL can query Bloomberg data. The URL is not guessable (random subdomain)
-but it is not secret either. If this is a concern, Tailscale's ACL-based access (without Funnel,
-using only the private Tailscale network) is the more secure option — but then only machines
-on the same Tailscale network can connect, not Claude Desktop's cloud connectors.
+### Steps
+
+1. Enable Tailscale Funnel in the admin console:
+   - https://login.tailscale.com/admin/dns → enable HTTPS Certificates
+   - https://login.tailscale.com/admin/acls → add Funnel to ACL policy
+2. On the Bloomberg machine:
+   ```
+   blpapi-mcp --http
+   tailscale funnel 8080
+   ```
+   Note the public URL: `https://<machine-name>.<tailnet>.ts.net`
+3. Set up Auth0 (free tier, up to 7,500 users): https://auth0.com
+4. Add OAuth support to the MCP server using FastMCP's `token_verifier` and
+   `AuthSettings` — see the MCP authorization guide:
+   https://modelcontextprotocol.io/docs/tutorials/security/authorization
+5. Users add the public URL to Claude Desktop and authenticate once via browser:
+   ```
+   https://<machine-name>.<tailnet>.ts.net/mcp
+   ```
+
+**User setup:** browser login once, no software install  
+**Cost:** Tailscale free tier + Auth0 free tier = $0  
+**Code changes:** required — OAuth middleware on the MCP server  
+**Auth:** OAuth 2.1 Bearer tokens (Auth0 manages identity)
+
+### Security note
+
+The Funnel URL is publicly accessible by anyone who knows it. OAuth ensures
+only authenticated users can use it, but the URL itself is not secret.
+For a fully private setup, use Option A or B instead.

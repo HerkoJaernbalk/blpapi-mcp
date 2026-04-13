@@ -632,11 +632,23 @@ def serve(args: types.StartupArgs):
             session.sendRequest(req)
             results = []
             for msg in _drain(session):
+                if msg.hasElement("responseError"):
+                    err = msg.getElement("responseError")
+                    code = err.getElementAsInteger("code") if err.hasElement("code") else "?"
+                    message = err.getElementAsString("message") if err.hasElement("message") else str(err)
+                    raise RuntimeError(f"BeqsRequest error {code}: {message}")
                 if msg.hasElement("data"):
                     sec_data = msg.getElement("data").getElement("securityData")
                     for i in range(sec_data.numValues()):
                         sec = sec_data.getValueAsElement(i)
                         results.append({"security": sec.getElementAsString("security")})
+                else:
+                    # Unexpected message shape — surface it so failures aren't silent
+                    elements = [str(msg.getElement(i).name()) for i in range(msg.numElements())]
+                    raise RuntimeError(
+                        f"Unexpected BeqsRequest response (type={msg.messageType()}, "
+                        f"elements={elements}): {msg.toString()[:400]}"
+                    )
             return _csv(results)
         finally:
             session.stop()
