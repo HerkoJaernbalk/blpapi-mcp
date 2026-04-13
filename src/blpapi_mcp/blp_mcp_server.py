@@ -809,6 +809,10 @@ def serve(args: types.StartupArgs):
                 raise RuntimeError(
                     f"instrumentListRequest not available on {_INSTRUMENTS}; available: {ops}"
                 )
+            op = svc.getOperation("instrumentListRequest")
+            yf_type = op.requestDefinition().getElement("yellowKeyFilter").typeDefinition()
+            valid_filters = [yf_type.getEnumerator(i).name() for i in range(yf_type.numEnumerators())]
+            print(f"Valid yellowKeyFilter values: {valid_filters}")
             req = svc.createRequest("instrumentListRequest")
             req.set("query", query)
             req.set("yellowKeyFilter", f"YK_FILTER_{typ.upper()}")
