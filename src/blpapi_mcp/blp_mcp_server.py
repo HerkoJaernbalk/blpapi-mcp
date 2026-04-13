@@ -13,9 +13,10 @@ from mcp.server.fastmcp.utilities.logging import get_logger
 from . import types
 
 
-_REFDATA = "//blp/refdata"
-_EXRSVC  = "//blp/exrsvc"
-_BQLSVC  = "//blp/bqlsvc"
+_REFDATA      = "//blp/refdata"
+_EXRSVC       = "//blp/exrsvc"
+_BQLSVC       = "//blp/bqlsvc"
+_INSTRUMENTS  = "//blp/instruments"
 _TIMEOUT = 10_000  # ms
 
 # Intraday session time windows (HH:MM:SS)
@@ -784,6 +785,50 @@ def serve(args: types.StartupArgs):
         finally:
             session.stop()
 
+
+    @mcp.tool(
+        name="instruments",
+        description="""Search for Bloomberg securities by name or keyword using //blp/instruments.
+
+        query: search string e.g. company name "Volvo" or "Apple"
+        typ: asset class filter - 'Corp', 'Equity', 'Govt', 'Mtge', 'Muni', 'Pfd', 'Curncy', 'Index', 'Comdty'
+        max_results: number of results to return, default 20
+
+        Returns matching Bloomberg tickers and security names.
+        Useful for discovering bond tickers, options, and other securities where the ticker is not known.
+        """
+    )
+    async def instruments(query: str, typ: str = "Corp", max_results: int = 20) -> str:
+        session = _make_session()
+        try:
+            if not session.openService(_INSTRUMENTS):
+                raise RuntimeError(f"Failed to open {_INSTRUMENTS}")
+            svc = session.getService(_INSTRUMENTS)
+            req = svc.createRequest("SecurityLookupRequest")
+            req.set("query", query)
+            req.set("yellowKeyFilter", f"YK_FILTER_{typ.upper()}")
+            req.set("maxResults", max_results)
+            session.sendRequest(req)
+            results = []
+            for msg in _drain(session):
+                if msg.hasElement("responseError"):
+                    err = msg.getElement("responseError")
+                    code = err.getElementAsInteger("code") if err.hasElement("code") else "?"
+                    message = err.getElementAsString("message") if err.hasElement("message") else str(err)
+                    raise RuntimeError(f"SecurityLookupRequest error {code}: {message}")
+                if msg.hasElement("results"):
+                    res = msg.getElement("results")
+                    for i in range(res.numValues()):
+                        item = res.getValueAsElement(i)
+                        row = {}
+                        if item.hasElement("security"):
+                            row["security"] = item.getElementAsString("security")
+                        if item.hasElement("description"):
+                            row["description"] = item.getElementAsString("description")
+                        results.append(row)
+            return _csv(results)
+        finally:
+            session.stop()
 
     if args.transport == types.Transport.HTTP:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _s:
