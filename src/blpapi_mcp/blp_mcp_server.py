@@ -805,11 +805,11 @@ def serve(args: types.StartupArgs):
                 raise RuntimeError(f"Failed to open {_INSTRUMENTS}")
             svc = session.getService(_INSTRUMENTS)
             ops = [svc.getOperation(i).name() for i in range(svc.numOperations())]
-            if "SecurityLookupRequest" not in ops:
+            if "instrumentListRequest" not in ops:
                 raise RuntimeError(
-                    f"SecurityLookupRequest not available on {_INSTRUMENTS}; available: {ops}"
+                    f"instrumentListRequest not available on {_INSTRUMENTS}; available: {ops}"
                 )
-            req = svc.createRequest("SecurityLookupRequest")
+            req = svc.createRequest("instrumentListRequest")
             req.set("query", query)
             req.set("yellowKeyFilter", f"YK_FILTER_{typ.upper()}")
             req.set("maxResults", max_results)
@@ -820,7 +820,7 @@ def serve(args: types.StartupArgs):
                     err = msg.getElement("responseError")
                     code = err.getElementAsInteger("code") if err.hasElement("code") else "?"
                     message = err.getElementAsString("message") if err.hasElement("message") else str(err)
-                    raise RuntimeError(f"SecurityLookupRequest error {code}: {message}")
+                    raise RuntimeError(f"instrumentListRequest error {code}: {message}")
                 elif msg.hasElement("results"):
                     res = msg.getElement("results")
                     for i in range(res.numValues()):
@@ -834,7 +834,113 @@ def serve(args: types.StartupArgs):
                 else:
                     elements = [str(msg.getElement(i).name()) for i in range(msg.numElements())]
                     raise RuntimeError(
-                        f"Unexpected SecurityLookupRequest response (type={msg.messageType()}, "
+                        f"Unexpected instrumentListRequest response (type={msg.messageType()}, "
+                        f"elements={elements}): {msg.toString()[:400]}"
+                    )
+            return _csv(results)
+        finally:
+            session.stop()
+
+    @mcp.tool(
+        name="curve_list",
+        description="""Search for Bloomberg yield curves by name or keyword using //blp/instruments curveListRequest.
+
+        query: search string e.g. 'USD swap' or 'EUR govt'
+        max_results: number of results to return, default 20
+
+        Returns matching curve identifiers and descriptions.
+        Useful for discovering curve tickers to use in fixed income analytics.
+        """
+    )
+    async def curve_list(query: str, max_results: int = 20) -> str:
+        session = _make_session()
+        try:
+            if not session.openService(_INSTRUMENTS):
+                raise RuntimeError(f"Failed to open {_INSTRUMENTS}")
+            svc = session.getService(_INSTRUMENTS)
+            ops = [svc.getOperation(i).name() for i in range(svc.numOperations())]
+            if "curveListRequest" not in ops:
+                raise RuntimeError(
+                    f"curveListRequest not available on {_INSTRUMENTS}; available: {ops}"
+                )
+            req = svc.createRequest("curveListRequest")
+            req.set("query", query)
+            req.set("maxResults", max_results)
+            session.sendRequest(req)
+            results = []
+            for msg in _drain(session):
+                if msg.hasElement("responseError"):
+                    err = msg.getElement("responseError")
+                    code = err.getElementAsInteger("code") if err.hasElement("code") else "?"
+                    message = err.getElementAsString("message") if err.hasElement("message") else str(err)
+                    raise RuntimeError(f"curveListRequest error {code}: {message}")
+                elif msg.hasElement("results"):
+                    res = msg.getElement("results")
+                    for i in range(res.numValues()):
+                        item = res.getValueAsElement(i)
+                        row = {}
+                        if item.hasElement("curve"):
+                            row["curve"] = item.getElementAsString("curve")
+                        if item.hasElement("description"):
+                            row["description"] = item.getElementAsString("description")
+                        results.append(row)
+                else:
+                    elements = [str(msg.getElement(i).name()) for i in range(msg.numElements())]
+                    raise RuntimeError(
+                        f"Unexpected curveListRequest response (type={msg.messageType()}, "
+                        f"elements={elements}): {msg.toString()[:400]}"
+                    )
+            return _csv(results)
+        finally:
+            session.stop()
+
+    @mcp.tool(
+        name="govt_list",
+        description="""Search for Bloomberg government bonds by partial ticker using //blp/instruments govtListRequest.
+
+        query: partial ticker or search string e.g. 'T' (US Treasuries), 'DBR' (German Bunds), 'UKT' (Gilts)
+        max_results: number of results to return, default 20
+
+        Returns matching government bond tickers and names.
+        Useful for discovering individual government bond tickers when the full ticker is not known.
+        """
+    )
+    async def govt_list(query: str, max_results: int = 20) -> str:
+        session = _make_session()
+        try:
+            if not session.openService(_INSTRUMENTS):
+                raise RuntimeError(f"Failed to open {_INSTRUMENTS}")
+            svc = session.getService(_INSTRUMENTS)
+            ops = [svc.getOperation(i).name() for i in range(svc.numOperations())]
+            if "govtListRequest" not in ops:
+                raise RuntimeError(
+                    f"govtListRequest not available on {_INSTRUMENTS}; available: {ops}"
+                )
+            req = svc.createRequest("govtListRequest")
+            req.set("query", query)
+            req.set("maxResults", max_results)
+            session.sendRequest(req)
+            results = []
+            for msg in _drain(session):
+                if msg.hasElement("responseError"):
+                    err = msg.getElement("responseError")
+                    code = err.getElementAsInteger("code") if err.hasElement("code") else "?"
+                    message = err.getElementAsString("message") if err.hasElement("message") else str(err)
+                    raise RuntimeError(f"govtListRequest error {code}: {message}")
+                elif msg.hasElement("results"):
+                    res = msg.getElement("results")
+                    for i in range(res.numValues()):
+                        item = res.getValueAsElement(i)
+                        row = {}
+                        if item.hasElement("parseky"):
+                            row["parseky"] = item.getElementAsString("parseky")
+                        if item.hasElement("name"):
+                            row["name"] = item.getElementAsString("name")
+                        results.append(row)
+                else:
+                    elements = [str(msg.getElement(i).name()) for i in range(msg.numElements())]
+                    raise RuntimeError(
+                        f"Unexpected govtListRequest response (type={msg.messageType()}, "
                         f"elements={elements}): {msg.toString()[:400]}"
                     )
             return _csv(results)
