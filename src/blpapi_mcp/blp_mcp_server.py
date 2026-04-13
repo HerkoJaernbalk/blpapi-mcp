@@ -611,28 +611,33 @@ def serve(args: types.StartupArgs):
     async def beqs(screen: str, asof: str | None = None, typ: str = "PRIVATE", group: str = "General", kwargs: dict[str, object] | None = None) -> str:
         session = _make_session()
         try:
-            if not session.openService(_EXRSVC):
-                raise RuntimeError(f"Failed to open {_EXRSVC}")
-            svc = session.getService(_EXRSVC)
-            req = svc.createRequest("RunScreenRequest")
-            req.set("screenType", typ)
+            if not session.openService(_REFDATA):
+                raise RuntimeError(f"Failed to open {_REFDATA}")
+            svc = session.getService(_REFDATA)
+            req = svc.createRequest("BeqsRequest")
             req.set("screenName", screen)
+            req.set("screenType", typ)
             req.set("Group", group)
-            if asof:
-                req.set("asofDate", _fmt_date(asof))
-            if kwargs:
-                for k, v in kwargs.items():
-                    req.set(k, v)
+            if asof or kwargs:
+                ovr = req.getElement("overrides")
+                if asof:
+                    o = ovr.appendElement()
+                    o.setElement("fieldId", "REFERENCE_DATE")
+                    o.setElement("value", _fmt_date(asof))
+                if kwargs:
+                    for k, v in kwargs.items():
+                        o = ovr.appendElement()
+                        o.setElement("fieldId", k)
+                        o.setElement("value", str(v))
             session.sendRequest(req)
             results = []
             for msg in _drain(session):
-                if msg.hasElement("results"):
-                    data = msg.getElement("results")
-                    for i in range(data.numValues()):
-                        results.append(_to_value(data.getValueAsElement(i)))
-            if results and isinstance(results[0], dict):
-                return _csv(results)
-            return _csv([{"security": r} for r in results])
+                if msg.hasElement("data"):
+                    sec_data = msg.getElement("data").getElement("securityData")
+                    for i in range(sec_data.numValues()):
+                        sec = sec_data.getValueAsElement(i)
+                        results.append({"security": sec.getElementAsString("security")})
+            return _csv(results)
         finally:
             session.stop()
 
