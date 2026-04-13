@@ -804,6 +804,11 @@ def serve(args: types.StartupArgs):
             if not session.openService(_INSTRUMENTS):
                 raise RuntimeError(f"Failed to open {_INSTRUMENTS}")
             svc = session.getService(_INSTRUMENTS)
+            ops = [svc.getOperation(i).name() for i in range(svc.numOperations())]
+            if "SecurityLookupRequest" not in ops:
+                raise RuntimeError(
+                    f"SecurityLookupRequest not available on {_INSTRUMENTS}; available: {ops}"
+                )
             req = svc.createRequest("SecurityLookupRequest")
             req.set("query", query)
             req.set("yellowKeyFilter", f"YK_FILTER_{typ.upper()}")
@@ -816,7 +821,7 @@ def serve(args: types.StartupArgs):
                     code = err.getElementAsInteger("code") if err.hasElement("code") else "?"
                     message = err.getElementAsString("message") if err.hasElement("message") else str(err)
                     raise RuntimeError(f"SecurityLookupRequest error {code}: {message}")
-                if msg.hasElement("results"):
+                elif msg.hasElement("results"):
                     res = msg.getElement("results")
                     for i in range(res.numValues()):
                         item = res.getValueAsElement(i)
@@ -826,6 +831,12 @@ def serve(args: types.StartupArgs):
                         if item.hasElement("description"):
                             row["description"] = item.getElementAsString("description")
                         results.append(row)
+                else:
+                    elements = [str(msg.getElement(i).name()) for i in range(msg.numElements())]
+                    raise RuntimeError(
+                        f"Unexpected SecurityLookupRequest response (type={msg.messageType()}, "
+                        f"elements={elements}): {msg.toString()[:400]}"
+                    )
             return _csv(results)
         finally:
             session.stop()
