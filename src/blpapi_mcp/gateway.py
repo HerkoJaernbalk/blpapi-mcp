@@ -242,7 +242,10 @@ def create_app(config: GatewayConfig) -> FastAPI:
                     upstream = await client.post(
                         config.worker_mcp_url,
                         content=body,
-                        headers={"content-type": request.headers.get("content-type", "application/json")},
+                        headers={
+                            "content-type": request.headers.get("content-type", "application/json"),
+                            "accept": request.headers.get("accept", "application/json, text/event-stream"),
+                        },
                     )
                 if upstream.status_code >= 400:
                     logger.error("upstream tools/list failed status=%s", upstream.status_code)
@@ -270,7 +273,10 @@ def create_app(config: GatewayConfig) -> FastAPI:
                     "POST",
                     config.worker_mcp_url,
                     content=body,
-                    headers={"content-type": request.headers.get("content-type", "application/json")},
+                    headers={
+                        "content-type": request.headers.get("content-type", "application/json"),
+                        "accept": request.headers.get("accept", "application/json, text/event-stream"),
+                    },
                 ) as upstream:
                     if upstream.status_code >= 400:
                         logger.error("upstream call failed status=%s method=%s id=%s", upstream.status_code, method, req_id)
