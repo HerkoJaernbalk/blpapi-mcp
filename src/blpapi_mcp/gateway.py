@@ -235,6 +235,15 @@ def create_app(config: GatewayConfig) -> FastAPI:
                     content=_jsonrpc_error(req_id, -32004, "Argument policy violation", {"reason": arg_errors[0]}),
                 )
 
+        upstream_headers = {
+            "content-type": request.headers.get("content-type", "application/json"),
+            "accept": request.headers.get("accept", "application/json, text/event-stream"),
+        }
+        # Preserve MCP session/protocol headers so upstream streamable-http state works.
+        for header_name in ("mcp-session-id", "mcp-protocol-version", "last-event-id"):
+            if request.headers.get(header_name):
+                upstream_headers[header_name] = request.headers[header_name]
+
         if method == "tools/list":
             # tools/list responses are tiny; fetch and filter in-memory before returning.
             try:
@@ -242,10 +251,7 @@ def create_app(config: GatewayConfig) -> FastAPI:
                     upstream = await client.post(
                         config.worker_mcp_url,
                         content=body,
-                        headers={
-                            "content-type": request.headers.get("content-type", "application/json"),
-                            "accept": request.headers.get("accept", "application/json, text/event-stream"),
-                        },
+                        headers=upstream_headers,
                     )
                 if upstream.status_code >= 400:
                     logger.error("upstream tools/list failed status=%s", upstream.status_code)
@@ -255,10 +261,15 @@ def create_app(config: GatewayConfig) -> FastAPI:
                     )
                 upstream_data = upstream.json()
                 filtered = _filter_tools_list_response(upstream_data, config.allowed_tools)
+                response_headers = {"x-gateway": "blpapi-mcp-gateway"}
+                if upstream.headers.get("mcp-session-id"):
+                    response_headers["mcp-session-id"] = upstream.headers["mcp-session-id"]
+                if upstream.headers.get("mcp-protocol-version"):
+                    response_headers["mcp-protocol-version"] = upstream.headers["mcp-protocol-version"]
                 return JSONResponse(
                     content=filtered,
                     status_code=upstream.status_code,
-                    headers={"x-gateway": "blpapi-mcp-gateway"},
+                    headers=response_headers,
                 )
             except Exception:
                 logger.exception("tools/list forwarding error")
@@ -267,27 +278,33 @@ def create_app(config: GatewayConfig) -> FastAPI:
                     content=_jsonrpc_error(req_id, -32020, "Upstream connection error"),
                 )
 
-        async def _stream_upstream() -> Any:
-            async with httpx.AsyncClient(timeout=config.forward_timeout_sec) as client:
-                async with client.stream(
-                    "POST",
-                    config.worker_mcp_url,
-                    content=body,
-                    headers={
-                        "content-type": request.headers.get("content-type", "application/json"),
-                        "accept": request.headers.get("accept", "application/json, text/event-stream"),
-                    },
-                ) as upstream:
-                    if upstream.status_code >= 400:
-                        logger.error("upstream call failed status=%s method=%s id=%s", upstream.status_code, method, req_id)
+        try:
+            client = httpx.AsyncClient(timeout=config.forward_timeout_sec)
+            upstream = await client.send(
+                client.build_request("POST", config.worker_mcp_url, content=body, headers=upstream_headers),
+                stream=True,
+            )
+            if upstream.status_code >= 400:
+                logger.error("upstream call failed status=%s method=%s id=%s", upstream.status_code, method, req_id)
+
+            async def _stream_upstream() -> Any:
+                try:
                     async for chunk in upstream.aiter_bytes():
                         yield chunk
+                finally:
+                    await upstream.aclose()
+                    await client.aclose()
 
-        try:
+            passthrough_headers = {"x-gateway": "blpapi-mcp-gateway"}
+            if upstream.headers.get("mcp-session-id"):
+                passthrough_headers["mcp-session-id"] = upstream.headers["mcp-session-id"]
+            if upstream.headers.get("mcp-protocol-version"):
+                passthrough_headers["mcp-protocol-version"] = upstream.headers["mcp-protocol-version"]
             return StreamingResponse(
                 _stream_upstream(),
                 media_type=request.headers.get("accept", "application/json"),
-                headers={"x-gateway": "blpapi-mcp-gateway"},
+                headers=passthrough_headers,
+                status_code=upstream.status_code,
             )
         except Exception:
             logger.exception("stream forwarding error")
