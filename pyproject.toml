@@ -10,10 +10,15 @@ requires-python = ">=3.10, <3.13"
 dependencies = [
     "blpapi>=3.25.3",
     "mcp[cli]>=1.6.0",
+    "fastapi>=0.115.0",
+    "httpx>=0.27.0",
+    "uvicorn>=0.30.0",
 ]
 
 [project.scripts]
 blpapi-mcp = "blpapi_mcp:main"
+blpapi-worker = "blpapi_mcp:main"
+blpapi-gateway = "blpapi_mcp.gateway:main"
 
 [build-system]
 requires = ["hatchling"]

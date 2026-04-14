@@ -16,7 +16,7 @@ def parse_args():
   is_http = args.http or args.host is not None or args.port is not None or os.environ.get("SSE_MODE", "").lower() == "true"
 
   transport = types.Transport.HTTP if is_http else types.Transport.STDIO
-  host = args.host or os.environ.get("HOST", "0.0.0.0")
+  host = args.host or os.environ.get("HOST", "127.0.0.1")
   port = args.port or int(os.environ.get("PORT", 8080))
   return types.StartupArgs(transport=transport, host=host, port=port)
 

@@ -1,106 +1,177 @@
-# BLPAPI-MCP
+# blpapi-mcp
 
-A MCP server that gives Claude Desktop access to Bloomberg financial data.
+Bloomberg MCP tooling split into two roles:
 
-> **Note:** A Bloomberg Terminal must be running on the same machine for this to work.
+- Worker: runs close to Bloomberg Terminal and executes Bloomberg API calls.
+- Gateway: exposes a ChatGPT-compatible `/mcp` endpoint over HTTP(S), adds auth, logging, and policy enforcement, then forwards to the worker.
+
+## Architecture
+
+```text
+ChatGPT Desktop / Remote MCP Client
+        |
+        | HTTPS (Bearer auth, policy, logs)
+        v
+Gateway (this repo: blpapi-gateway)
+        |
+        | Private network / tunnel
+        v
+Worker (this repo: blpapi-worker)
+        |
+        v
+Bloomberg Terminal + BBComm (localhost:8194)
+```
+
+## What Changed
+
+- Existing Bloomberg tool logic remains in the worker (`src/blpapi_mcp/blp_mcp_server.py`).
+- New gateway service at `src/blpapi_mcp/gateway.py`:
+  - exposes `POST /mcp`
+  - validates bearer auth before forwarding
+  - logs requests and forwarding errors
+  - enforces tool allowlist and argument limits
+  - forwards responses in streaming HTTP mode
+- Worker HTTP default host is now `127.0.0.1` (safer default than `0.0.0.0`).
+
+## Tool Policy (Gateway Default)
+
+Initially allowed:
+
+- `bdp`
+- `bds`
+- `bdh`
+- `instruments`
+- `curve_list`
+- `govt_list`
+- `earning`
+- `dividend`
+
+Initially blocked unless feature-flagged:
+
+- `bql`
+- `bdtick`
+- `beqs`
+
+Enable high-risk tools by setting:
+
+```bash
+MCP_GATEWAY_ENABLE_HIGH_RISK_TOOLS=true
+```
 
 ## Requirements
 
-- Bloomberg Terminal (running and logged in)
-- [Python 3.12](https://www.python.org/downloads/release/python-3120/) — newest version supported by blpapi
-- [UV](https://docs.astral.sh/uv/getting-started/installation/) — Python package manager
-- [Claude Desktop](https://claude.ai/download)
+- Bloomberg Terminal running and logged in (worker machine)
+- Python 3.12 recommended (project supports `>=3.10,<3.13`)
+- `uv` or another Python package manager
 
-## Installation
-
-### 1. Install Python 3.12
-
-Download and install from [python.org](https://www.python.org/downloads/release/python-3120/). During installation, check **"Add Python to PATH"**.
-
-### 2. Install UV
-
-Open Command Prompt and run:
+## Install
 
 ```bash
-winget install astral-sh.uv
+uv sync
 ```
 
-### 3. Install blpapi-mcp
+or install as a tool:
 
 ```bash
-uv tool install "git+https://github.com/HerkoJaernbalk/blpapi-mcp" --extra-index-url https://blpapi.bloomberg.com/repository/releases/python/simple/
+uv tool install "git+https://github.com/HerkoJaernbalk/blpapi-mcp" \
+  --extra-index-url https://blpapi.bloomberg.com/repository/releases/python/simple/
 ```
 
-The `--extra-index-url` is required because `blpapi` is distributed via Bloomberg's own package index, not the public Python one. UV will handle the isolated environment automatically.
+## Run Worker (Office Machine)
 
-### 4. Configure Claude Desktop
-
-Open (or create) Claude Desktop's config file at:
-```
-%APPDATA%\Claude\claude_desktop_config.json
-```
-
-Add the following, replacing `<your-username>` with your Windows username:
-
-```json
-{
-  "mcpServers": {
-    "bloomberg": {
-      "command": "C:\\Users\\<your-username>\\.local\\bin\\blpapi-mcp.exe"
-    }
-  }
-}
-```
-
-> **Tip:** Not sure of your username? Open Command Prompt and type `echo %USERNAME%`
-
-### 5. Restart Claude Desktop
-
-Restart Claude Desktop. If everything is set up correctly, you should see Bloomberg listed as a connected tool.
-
-## Running as a Network Server (HTTP mode)
-
-Instead of running as a local subprocess, you can run blpapi-mcp as an HTTP server on the Bloomberg machine and connect to it from other computers on the same network.
-
-### On the Bloomberg machine
+Stdio mode (local MCP process):
 
 ```bash
-blpapi-mcp --http
+blpapi-worker
 ```
 
-The server will print:
-```
-Bloomberg MCP server listening on http://0.0.0.0:8080/mcp
-Connect clients to: http://192.168.x.x:8080/mcp
-```
-
-Use the IP from the second line in the client config below.
-
-
-## Access Bloomberg on the Go
-
-Once Claude Desktop is running on your Bloomberg Terminal machine, you can access Bloomberg data from anywhere using [Claude for iPhone](https://apps.apple.com/app/claude-ai/id6473753684) with the **Dispatch** feature.
-
-Dispatch lets your phone connect to Claude Desktop running on your local machine, meaning you can pull Bloomberg data and do financial analysis on the go — as long as your Bloomberg Terminal machine is on and Claude Desktop is running.
-
-The real power here is what Claude can do with the data: pull and compare metrics across dozens of securities in one prompt, run cross-sectional analysis, generate charts, and produce written summaries — all through natural conversation. No manual lookups, no repetitive navigation.
-
-Any analysis Claude produces can be saved directly to your computer in any format — Excel, PowerPoint, Word, PDF, or others. Claude will ask where to save the file and prompt you to grant folder access the first time. Once permitted, files land on your computer ready to use.
-
-## Updating
-
-To update to the latest version:
+HTTP mode (private listener):
 
 ```bash
-uv tool install --force "git+https://github.com/HerkoJaernbalk/blpapi-mcp" --extra-index-url https://blpapi.bloomberg.com/repository/releases/python/simple/
+blpapi-worker --http --host 127.0.0.1 --port 8080
 ```
 
-## Troubleshooting
+If needed for LAN-only exposure, bind to a private IP explicitly:
 
-- **Bloomberg not showing in Claude** — make sure Bloomberg Terminal is open and logged in before starting Claude Desktop
-- **Install fails** — make sure Python 3.12 is installed and UV is installed, then try again
-- **Wrong path in config** — run `where blpapi-mcp` in Command Prompt to find the exact path
+```bash
+blpapi-worker --http --host 192.168.1.50 --port 8080
+```
 
-## Trademark Note
+## Run Gateway
 
-This project is not affiliated with Bloomberg Finance L.P. The use of the name Bloomberg is only descriptive of what this package is used with.
+Copy `.env.gateway.example` to `.env` (or export vars) and set at least:
+
+- `WORKER_MCP_URL`
+- `MCP_GATEWAY_TOKENS`
+
+Then run:
+
+```bash
+blpapi-gateway --host 0.0.0.0 --port 8443
+```
+
+Health endpoint:
+
+```text
+GET /healthz
+```
+
+MCP endpoint:
+
+```text
+POST /mcp
+Authorization: Bearer <token>
+```
+
+## Client Connection (ChatGPT-Compatible MCP)
+
+Point the client to the gateway URL, for example:
+
+```text
+https://mcp.example.com/mcp
+```
+
+Send bearer auth using one of `MCP_GATEWAY_TOKENS`.
+
+## Deployment Patterns
+
+### Pattern A: Reverse Proxy TLS Termination
+
+Run gateway behind Nginx/Caddy/Traefik:
+
+- Internet-facing proxy terminates HTTPS.
+- Proxy forwards `/mcp` to `http://127.0.0.1:8443/mcp`.
+- Gateway forwards to worker over private route/tunnel.
+
+### Pattern B: Private Tunnel Back To Office
+
+Keep worker private, reachable only through a secure tunnel:
+
+- Gateway in cloud/VPS.
+- Tunnel from gateway to office worker (for example WireGuard, Tailscale, or SSH reverse tunnel).
+- Set `WORKER_MCP_URL` to tunnel/private endpoint.
+
+Full copy-paste examples are in `DEPLOYMENT.md`.
+
+## Config Examples
+
+See:
+
+- `.env.worker.example`
+- `.env.gateway.example`
+
+## Remaining Auth Integration Steps
+
+Current gateway auth is static bearer token validation. For production hardening, next steps:
+
+1. Integrate an identity provider (OIDC/JWT verification with key rotation).
+2. Add token scopes/claims mapped to per-tool policy.
+3. Add rate limits and abuse detection (per token/IP).
+4. Add structured audit logs to SIEM (request id, principal, tool, outcome).
+5. Add secret management (Vault/KMS) instead of plain env tokens.
+
+## Notes
+
+- Bloomberg APIs still execute only on the worker side.
+- Gateway policy enforcement is request-level (`tools/call`) and tool discovery filtering (`tools/list`).
+- `blpapi-mcp` script remains available and maps to worker mode for backward compatibility.
