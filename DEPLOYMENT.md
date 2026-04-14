@@ -5,7 +5,7 @@
 Gateway process:
 
 ```bash
-blpapi-gateway --host 127.0.0.1 --port 8443
+blpapi-gateway-chatgpt --host 127.0.0.1 --port 8443
 ```
 
 Nginx example:
@@ -39,7 +39,7 @@ server {
 On office worker machine (where Bloomberg Terminal runs):
 
 ```bash
-blpapi-worker --http --host 127.0.0.1 --port 8080
+blpapi-worker-chatgpt --http --host 127.0.0.1 --port 8080
 ssh -N -R 18080:127.0.0.1:8080 user@gateway-host
 ```
 
@@ -47,7 +47,7 @@ On gateway machine:
 
 ```bash
 export WORKER_MCP_URL=http://127.0.0.1:18080/mcp
-blpapi-gateway --host 127.0.0.1 --port 8443
+blpapi-gateway-chatgpt --host 127.0.0.1 --port 8443
 ```
 
 ## 3. Private Mesh Network (Tailscale/WireGuard)
@@ -55,14 +55,14 @@ blpapi-gateway --host 127.0.0.1 --port 8443
 Office worker:
 
 ```bash
-blpapi-worker --http --host 100.x.y.z --port 8080
+blpapi-worker-chatgpt --http --host 100.x.y.z --port 8080
 ```
 
 Gateway:
 
 ```bash
 export WORKER_MCP_URL=http://100.x.y.z:8080/mcp
-blpapi-gateway --host 127.0.0.1 --port 8443
+blpapi-gateway-chatgpt --host 127.0.0.1 --port 8443
 ```
 
 Keep firewall rules restricted to private mesh peers only.

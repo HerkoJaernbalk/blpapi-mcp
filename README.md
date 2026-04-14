@@ -1,4 +1,4 @@
-# blpapi-mcp
+# blpapi-mcp-chatgpt
 
 Bloomberg MCP tooling split into two roles:
 
@@ -12,11 +12,11 @@ ChatGPT Desktop / Remote MCP Client
         |
         | HTTPS (Bearer auth, policy, logs)
         v
-Gateway (this repo: blpapi-gateway)
+Gateway (this repo: blpapi-gateway-chatgpt)
         |
         | Private network / tunnel
         v
-Worker (this repo: blpapi-worker)
+Worker (this repo: blpapi-worker-chatgpt)
         |
         v
 Bloomberg Terminal + BBComm (localhost:8194)
@@ -73,7 +73,7 @@ uv sync
 or install as a tool:
 
 ```bash
-uv tool install "git+https://github.com/HerkoJaernbalk/blpapi-mcp" \
+uv tool install "git+https://github.com/HerkoJaernbalk/blpapi-mcp@chatgpt" \
   --extra-index-url https://blpapi.bloomberg.com/repository/releases/python/simple/
 ```
 
@@ -82,19 +82,19 @@ uv tool install "git+https://github.com/HerkoJaernbalk/blpapi-mcp" \
 Stdio mode (local MCP process):
 
 ```bash
-blpapi-worker
+blpapi-worker-chatgpt
 ```
 
 HTTP mode (private listener):
 
 ```bash
-blpapi-worker --http --host 127.0.0.1 --port 8080
+blpapi-worker-chatgpt --http --host 127.0.0.1 --port 8080
 ```
 
 If needed for LAN-only exposure, bind to a private IP explicitly:
 
 ```bash
-blpapi-worker --http --host 192.168.1.50 --port 8080
+blpapi-worker-chatgpt --http --host 192.168.1.50 --port 8080
 ```
 
 ## Run Gateway
@@ -107,7 +107,7 @@ Copy `.env.gateway.example` to `.env` (or export vars) and set at least:
 Then run:
 
 ```bash
-blpapi-gateway --host 0.0.0.0 --port 8443
+blpapi-gateway-chatgpt --host 0.0.0.0 --port 8443
 ```
 
 Health endpoint:
@@ -174,4 +174,4 @@ Current gateway auth is static bearer token validation. For production hardening
 
 - Bloomberg APIs still execute only on the worker side.
 - Gateway policy enforcement is request-level (`tools/call`) and tool discovery filtering (`tools/list`).
-- `blpapi-mcp` script remains available and maps to worker mode for backward compatibility.
+- This package is intentionally renamed so it can coexist with your existing `blpapi-mcp` tool install.

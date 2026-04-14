@@ -1,5 +1,5 @@
 [project]
-name = "blpapi-mcp"
+name = "blpapi-mcp-chatgpt"
 version = "0.1.0"
 description = "A MCP server providing financial data from Bloomberg blpapi"
 readme = "README.md"
@@ -16,9 +16,9 @@ dependencies = [
 ]
 
 [project.scripts]
-blpapi-mcp = "blpapi_mcp:main"
-blpapi-worker = "blpapi_mcp:main"
-blpapi-gateway = "blpapi_mcp.gateway:main"
+blpapi-mcp-chatgpt = "blpapi_mcp:main"
+blpapi-worker-chatgpt = "blpapi_mcp:main"
+blpapi-gateway-chatgpt = "blpapi_mcp.gateway:main"
 
 [build-system]
 requires = ["hatchling"]
