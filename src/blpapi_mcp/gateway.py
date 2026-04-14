@@ -362,9 +362,17 @@ def create_app(config: GatewayConfig) -> FastAPI:
                 try:
                     async for chunk in upstream.aiter_bytes():
                         yield chunk
+                except Exception:
+                    logger.exception("stream forwarding error while reading upstream response")
                 finally:
-                    await upstream.aclose()
-                    await client.aclose()
+                    try:
+                        await upstream.aclose()
+                    except Exception:
+                        logger.exception("error closing upstream response stream")
+                    try:
+                        await client.aclose()
+                    except Exception:
+                        logger.exception("error closing upstream client")
 
             passthrough_headers = {"x-gateway": "blpapi-mcp-gateway"}
             if upstream.headers.get("mcp-session-id"):
