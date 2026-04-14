@@ -3,6 +3,7 @@ import datetime as dt
 import json
 import logging
 import os
+import re
 from typing import Any
 
 import httpx
@@ -176,6 +177,43 @@ def _filter_tools_list_response(data: Any, allowed_tools: set[str]) -> Any:
     return data
 
 
+def _parse_sse_json_payload(text: str) -> dict[str, Any] | None:
+    lines = text.splitlines()
+    data_lines: list[str] = []
+    in_event = False
+    for raw_line in lines:
+        line = raw_line.rstrip("\r")
+        if line.startswith("event:"):
+            in_event = True
+            continue
+        if line.startswith("data:"):
+            in_event = True
+            data_lines.append(line[5:].lstrip())
+            continue
+        if line == "" and in_event and data_lines:
+            joined = "\n".join(data_lines).strip()
+            try:
+                return json.loads(joined)
+            except json.JSONDecodeError:
+                data_lines = []
+                in_event = False
+                continue
+    if data_lines:
+        joined = "\n".join(data_lines).strip()
+        try:
+            return json.loads(joined)
+        except json.JSONDecodeError:
+            return None
+    # Fallback: try extracting JSON object in content.
+    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return None
+
+
 def create_app(config: GatewayConfig) -> FastAPI:
     app = FastAPI(title="blpapi-mcp-gateway", version="0.1.0")
     logger = logging.getLogger("blpapi_mcp.gateway")
@@ -259,18 +297,32 @@ def create_app(config: GatewayConfig) -> FastAPI:
                         status_code=502,
                         content=_jsonrpc_error(req_id, -32020, "Upstream error during tools/list"),
                     )
-                upstream_data = upstream.json()
+                content_type = upstream.headers.get("content-type", "")
+                if "text/event-stream" in content_type:
+                    upstream_data = _parse_sse_json_payload(upstream.text)
+                else:
+                    try:
+                        upstream_data = upstream.json()
+                    except json.JSONDecodeError:
+                        upstream_data = _parse_sse_json_payload(upstream.text)
+                if not isinstance(upstream_data, dict):
+                    raise ValueError("Unable to parse upstream tools/list payload")
                 filtered = _filter_tools_list_response(upstream_data, config.allowed_tools)
                 response_headers = {"x-gateway": "blpapi-mcp-gateway"}
                 if upstream.headers.get("mcp-session-id"):
                     response_headers["mcp-session-id"] = upstream.headers["mcp-session-id"]
                 if upstream.headers.get("mcp-protocol-version"):
                     response_headers["mcp-protocol-version"] = upstream.headers["mcp-protocol-version"]
-                return JSONResponse(
-                    content=filtered,
-                    status_code=upstream.status_code,
-                    headers=response_headers,
-                )
+                request_accept = request.headers.get("accept", "")
+                if "text/event-stream" in request_accept:
+                    body = f"event: message\ndata: {json.dumps(filtered, separators=(',', ':'))}\n\n"
+                    return Response(
+                        content=body,
+                        status_code=upstream.status_code,
+                        headers=response_headers,
+                        media_type="text/event-stream",
+                    )
+                return JSONResponse(content=filtered, status_code=upstream.status_code, headers=response_headers)
             except Exception:
                 logger.exception("tools/list forwarding error")
                 return JSONResponse(
