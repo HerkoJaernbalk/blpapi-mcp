@@ -379,8 +379,11 @@ def create_app(config: GatewayConfig) -> FastAPI:
                 passthrough_headers["mcp-session-id"] = upstream.headers["mcp-session-id"]
             if upstream.headers.get("mcp-protocol-version"):
                 passthrough_headers["mcp-protocol-version"] = upstream.headers["mcp-protocol-version"]
-            upstream_content_type = upstream.headers.get("content-type", "application/json")
-            media_type = upstream_content_type.split(";", 1)[0].strip() or "application/json"
+            request_accept = request.headers.get("accept", "")
+            if "text/event-stream" in request_accept:
+                media_type = "text/event-stream"
+            else:
+                media_type = "application/json"
             return StreamingResponse(
                 _stream_upstream(),
                 media_type=media_type,
