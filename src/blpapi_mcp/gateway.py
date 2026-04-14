@@ -224,6 +224,25 @@ def create_app(config: GatewayConfig) -> FastAPI:
     async def healthz() -> dict[str, Any]:
         return {"ok": True}
 
+    @app.get("/mcp")
+    async def mcp_info() -> dict[str, Any]:
+        return {
+            "name": "blpapi-mcp-gateway",
+            "status": "ok",
+            "message": "Use POST /mcp for JSON-RPC requests.",
+        }
+
+    @app.options("/mcp")
+    async def mcp_options() -> Response:
+        return Response(
+            status_code=204,
+            headers={
+                "allow": "GET, POST, OPTIONS",
+                "access-control-allow-methods": "GET, POST, OPTIONS",
+                "access-control-allow-headers": "authorization, content-type, accept, mcp-session-id, mcp-protocol-version, last-event-id",
+            },
+        )
+
     @app.post("/mcp")
     async def mcp_proxy(request: Request) -> Response:
         req_id: Any = None
