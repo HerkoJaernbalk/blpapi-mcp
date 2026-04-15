@@ -312,7 +312,7 @@ def create_app(config: GatewayConfig) -> FastAPI:
 
         upstream_headers = {
             "content-type": request.headers.get("content-type", "application/json"),
-            "accept": request.headers.get("accept", "application/json, text/event-stream"),
+            "accept": "application/json, text/event-stream",
         }
         # Preserve MCP session/protocol headers so upstream streamable-http state works.
         for header_name in ("mcp-session-id", "mcp-protocol-version", "last-event-id"):
