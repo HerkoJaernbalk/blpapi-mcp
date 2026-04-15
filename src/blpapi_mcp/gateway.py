@@ -350,15 +350,6 @@ def create_app(config: GatewayConfig) -> FastAPI:
                     response_headers["mcp-session-id"] = upstream.headers["mcp-session-id"]
                 if upstream.headers.get("mcp-protocol-version"):
                     response_headers["mcp-protocol-version"] = upstream.headers["mcp-protocol-version"]
-                request_accept = request.headers.get("accept", "")
-                if "text/event-stream" in request_accept:
-                    body = f"event: message\ndata: {json.dumps(filtered, separators=(',', ':'))}\n\n"
-                    return Response(
-                        content=body,
-                        status_code=upstream.status_code,
-                        headers=response_headers,
-                        media_type="text/event-stream",
-                    )
                 return JSONResponse(content=filtered, status_code=upstream.status_code, headers=response_headers)
             except Exception:
                 logger.exception("tools/list forwarding error")
@@ -384,15 +375,14 @@ def create_app(config: GatewayConfig) -> FastAPI:
                 passthrough_headers["mcp-protocol-version"] = upstream.headers["mcp-protocol-version"]
             upstream_content_type = upstream.headers.get("content-type", "application/json")
             media_type = upstream_content_type.split(";", 1)[0].strip() or "application/json"
-            request_accept = request.headers.get("accept", "")
-            if "text/event-stream" in request_accept and media_type == "application/json":
-                sse_body = f"event: message\ndata: {upstream.content.decode('utf-8')}\n\n"
-                return Response(
-                    content=sse_body,
-                    media_type="text/event-stream",
-                    headers=passthrough_headers,
-                    status_code=upstream.status_code,
-                )
+            if media_type == "text/event-stream":
+                parsed = _parse_sse_json_payload(upstream.text)
+                if isinstance(parsed, dict):
+                    return JSONResponse(
+                        content=parsed,
+                        status_code=upstream.status_code,
+                        headers=passthrough_headers,
+                    )
             return Response(
                 content=upstream.content,
                 media_type=media_type,

@@ -33,13 +33,13 @@ Enable with: `MCP_GATEWAY_ENABLE_HIGH_RISK_TOOLS=true`
 
 **Worker** (Bloomberg machine):
 ```bash
-blpapi-mcp-worker --http --host 127.0.0.1 --port 8080
+blpapi-worker-chatgpt --http --host 127.0.0.1 --port 8080
 ```
 
 **Gateway**:
 ```bash
 WORKER_MCP_URL=http://127.0.0.1:8080/mcp \
-blpapi-mcp-gateway --host 0.0.0.0 --port 8443
+blpapi-gateway-chatgpt --host 0.0.0.0 --port 8443
 ```
 
 ## Install

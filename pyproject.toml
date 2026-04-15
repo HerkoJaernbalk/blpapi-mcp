@@ -19,6 +19,8 @@ dependencies = [
 blpapi-mcp-chatgpt = "blpapi_mcp:main"
 blpapi-worker-chatgpt = "blpapi_mcp:main"
 blpapi-gateway-chatgpt = "blpapi_mcp.gateway:main"
+blpapi-mcp-worker = "blpapi_mcp:main"
+blpapi-mcp-gateway = "blpapi_mcp.gateway:main"
 
 [build-system]
 requires = ["hatchling"]
