@@ -262,7 +262,7 @@ def create_app(config: GatewayConfig) -> FastAPI:
             logger.exception("Invalid JSON request")
             return JSONResponse(status_code=400, content=_jsonrpc_error(req_id, -32700, "Invalid JSON"))
 
-        logger.info("mcp request method=%s id=%s", method, req_id)
+        logger.info("mcp request method=%s id=%s accept=%s", method, req_id, request.headers.get("accept", ""))
 
         if config.require_auth:
             token = _extract_bearer_token(request)
