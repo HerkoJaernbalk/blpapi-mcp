@@ -34,15 +34,6 @@ _YK_FILTER = {
     "MMkt":   "YK_FILTER_MMKT",
 }
 
-# Intraday session time windows (HH:MM:SS)
-_SESSION_TIMES = {
-    "allday": ("00:00:00", "23:59:59"),
-    "am":     ("04:00:00", "12:00:00"),
-    "pm":     ("12:00:00", "20:00:00"),
-    "pre":    ("04:00:00", "09:30:00"),
-    "post":   ("16:00:00", "20:00:00"),
-}
-
 
 def _make_session() -> blpapi.Session:
     opts = blpapi.SessionOptions()
@@ -103,10 +94,6 @@ def _fmt_date(date_str: str) -> str:
         return dt.date.today().strftime("%Y%m%d")
     return date_str.replace("-", "")
 
-
-def _parse_datetime(date_str: str, time_str: str) -> blpapi.datetime:
-    d = dt.datetime.strptime(f"{date_str}T{time_str}", "%Y-%m-%dT%H:%M:%S")
-    return blpapi.datetime(d.year, d.month, d.day, d.hour, d.minute, d.second)
 
 
 def _csv(rows: list[dict]) -> str:
@@ -182,7 +169,8 @@ def serve(args: types.StartupArgs):
           - NEVER use BEST_EPS_NXT_YR — use BEST_EPS with BEST_FPERIOD_OVERRIDE instead
           - IS_COMP_* fields are for historical actuals only
 
-        kwargs: Bloomberg field overrides as key/value pairs.
+        overrides: Bloomberg field overrides as a list of "KEY=VALUE" strings.
+          e.g. ["BEST_FPERIOD_OVERRIDE=2026Y", "EQY_FUND_CRNCY=USD"]
 
         BEST_FPERIOD_OVERRIDE format:
           "2026Y"  — fiscal year 2026
@@ -194,15 +182,15 @@ def serve(args: types.StartupArgs):
         Example — FY2026 and FY2027 consensus estimates:
           bdp(tickers=['VOLVB SS Equity'],
               flds=['BEST_EPS', 'BEST_SALES', 'BEST_EBIT'],
-              kwargs={'BEST_FPERIOD_OVERRIDE': '2026Y'})
+              overrides=['BEST_FPERIOD_OVERRIDE=2026Y'])
 
         Example — Q1 2026 consensus estimates:
           bdp(tickers=['VOLVB SS Equity'],
               flds=['BEST_EPS', 'BEST_SALES', 'BEST_EBIT'],
-              kwargs={'BEST_FPERIOD_OVERRIDE': '2026Q1'})
+              overrides=['BEST_FPERIOD_OVERRIDE=2026Q1'])
         """
     )
-    async def bdp(tickers: list[str], flds: list[str], kwargs: dict[str, object] | None = None) -> str:
+    async def bdp(tickers: list[str], flds: list[str], overrides: list[str] | None = None) -> str:
         session = _make_session()
         try:
             if not session.openService(_REFDATA):
@@ -213,9 +201,10 @@ def serve(args: types.StartupArgs):
                 req.append("securities", t)
             for f in flds:
                 req.append("fields", f)
-            if kwargs:
+            kv = dict(s.split("=", 1) for s in (overrides or []))
+            if kv:
                 ovr = req.getElement("overrides")
-                for k, v in kwargs.items():
+                for k, v in kv.items():
                     o = ovr.appendElement()
                     o.setElement("fieldId", k)
                     o.setElement("value", str(v))
@@ -261,7 +250,7 @@ def serve(args: types.StartupArgs):
                         DEBT_STRUCTURE (full debt breakdown)
         """
     )
-    async def bds(tickers: list[str], flds: list[str], kwargs: dict[str, object] | None = None) -> str:
+    async def bds(tickers: list[str], flds: list[str], overrides: list[str] | None = None) -> str:
         session = _make_session()
         try:
             if not session.openService(_REFDATA):
@@ -272,9 +261,10 @@ def serve(args: types.StartupArgs):
                 req.append("securities", t)
             for f in flds:
                 req.append("fields", f)
-            if kwargs:
+            kv = dict(s.split("=", 1) for s in (overrides or []))
+            if kv:
                 ovr = req.getElement("overrides")
-                for k, v in kwargs.items():
+                for k, v in kv.items():
                     o = ovr.appendElement()
                     o.setElement("fieldId", k)
                     o.setElement("value", str(v))
@@ -321,14 +311,14 @@ def serve(args: types.StartupArgs):
         Date format: 'YYYY-MM-DD' or 'today'
         periodicity: 'DAILY' (default), 'WEEKLY', 'MONTHLY', 'QUARTERLY', 'SEMI_ANNUALLY', 'YEARLY'
         adjust: 'all' (splits+dividends), 'dvd' (dividends only), 'split' (splits only), None
-        kwargs: Bloomberg field overrides as key/value pairs (e.g. BEST_FPERIOD_OVERRIDE, EQY_FUND_CRNCY)
+        overrides: Bloomberg field overrides as a list of "KEY=VALUE" strings, e.g. ["EQY_FUND_CRNCY=USD"]
 
         Fields: same set as bdp. Useful additions for time series:
           DAY_TO_DAY_TOT_RETURN_GROSS_DVDS — total return including dividends
           For estimates use periodicity='QUARTERLY' or 'YEARLY' with BEST_EPS, BEST_SALES etc.
         """
     )
-    async def bdh(tickers: list[str], flds: list[str], start_date: str | None = None, end_date: str = "today", periodicity: str = "DAILY", adjust: str | None = None, kwargs: dict[str, object] | None = None) -> str:
+    async def bdh(tickers: list[str], flds: list[str], start_date: str | None = None, end_date: str = "today", periodicity: str = "DAILY", adjust: str | None = None, overrides: list[str] | None = None) -> str:
         session = _make_session()
         try:
             if not session.openService(_REFDATA):
@@ -348,9 +338,10 @@ def serve(args: types.StartupArgs):
                 req.set("adjustmentAbnormal", True)
             if adjust in ("all", "split"):
                 req.set("adjustmentSplit", True)
-            if kwargs:
+            kv = dict(s.split("=", 1) for s in (overrides or []))
+            if kv:
                 ovr = req.getElement("overrides")
-                for k, v in kwargs.items():
+                for k, v in kv.items():
                     o = ovr.appendElement()
                     o.setElement("fieldId", k)
                     o.setElement("value", str(v))
@@ -377,116 +368,6 @@ def serve(args: types.StartupArgs):
             session.stop()
 
     @mcp.tool(
-        name="bdib",
-        description="""Get Bloomberg intraday bar data for a single security on a specific date.
-        Returns OHLCV bars aggregated at a given interval (default 1 minute).
-
-        Ticker format: same as bdp (e.g. 'AAPL US Equity')
-        dt format: 'YYYY-MM-DD'
-        session: 'allday' (all hours), 'am' (04:00-12:00), 'pm' (12:00-20:00),
-                 'pre' (04:00-09:30 pre-market), 'post' (16:00-20:00 after-hours)
-        typ: 'TRADE' (default), 'BID', 'ASK', 'BEST_BID', 'BEST_ASK'
-        interval: bar size in minutes (default 1)
-
-        Use this for intraday price analysis, VWAP calculations, or studying intraday patterns.
-        """
-    )
-    async def bdib(ticker: str, date: str, session: str = "allday", typ: str = "TRADE", interval: int = 1, kwargs: dict[str, object] | None = None) -> str:
-        blp_session = _make_session()
-        try:
-            if not blp_session.openService(_REFDATA):
-                raise RuntimeError(f"Failed to open {_REFDATA}")
-            svc = blp_session.getService(_REFDATA)
-            req = svc.createRequest("IntradayBarRequest")
-            req.set("security", ticker)
-            req.set("eventType", typ)
-            req.set("interval", interval)
-            start_t, end_t = _SESSION_TIMES.get(session, _SESSION_TIMES["allday"])
-            req.set("startDateTime", _parse_datetime(date, start_t))
-            req.set("endDateTime", _parse_datetime(date, end_t))
-            if kwargs:
-                for k, v in kwargs.items():
-                    req.set(k, v)
-            blp_session.sendRequest(req)
-            bars = []
-            for msg in _drain(blp_session):
-                bar_data = msg.getElement("barData").getElement("barTickData")
-                for i in range(bar_data.numValues()):
-                    bar = bar_data.getValueAsElement(i)
-                    bars.append({
-                        "time":      _to_value(bar.getElement("time")),
-                        "open":      bar.getElementAsFloat("open"),
-                        "high":      bar.getElementAsFloat("high"),
-                        "low":       bar.getElementAsFloat("low"),
-                        "close":     bar.getElementAsFloat("close"),
-                        "volume":    bar.getElementAsInteger("volume"),
-                        "numEvents": bar.getElementAsInteger("numEvents"),
-                    })
-            return _csv(bars)
-        finally:
-            blp_session.stop()
-
-    @mcp.tool(
-        name="bdtick",
-        description="""Get Bloomberg tick-by-tick trade and quote data for a single security on a specific date.
-        Returns every individual trade or quote event — much more granular than intraday bars.
-
-        Ticker format: same as bdp (e.g. 'AAPL US Equity')
-        date format: 'YYYY-MM-DD'
-        session: 'allday', 'am', 'pm', 'pre', 'post'
-        time_range: optional tuple of ('HH:MM:SS', 'HH:MM:SS') to limit time window
-        event_types: list of event types — ['TRADE', 'BID', 'ASK', 'BID_BEST', 'ASK_BEST', 'AT_TRADE']
-
-        Use for microstructure analysis, precise execution analysis, or spread analysis.
-        Warning: can return very large datasets for liquid securities — use time_range or max_rows to limit.
-        max_rows: cap output at this many ticks (default 5000); response includes truncation warning if hit.
-        """
-    )
-    async def bdtick(ticker: str, date: str, session: str = "allday", time_range: tuple[str, ...] | None = None, event_types: list[str] | None = None, max_rows: int = 5000, kwargs: dict[str, object] | None = None) -> str:
-        blp_session = _make_session()
-        try:
-            if not blp_session.openService(_REFDATA):
-                raise RuntimeError(f"Failed to open {_REFDATA}")
-            svc = blp_session.getService(_REFDATA)
-            req = svc.createRequest("IntradayTickRequest")
-            req.set("security", ticker)
-            for etype in (event_types or ["TRADE"]):
-                req.append("eventTypes", etype)
-            if time_range and len(time_range) == 2:
-                start_t, end_t = time_range[0], time_range[1]
-            else:
-                start_t, end_t = _SESSION_TIMES.get(session, _SESSION_TIMES["allday"])
-            req.set("startDateTime", _parse_datetime(date, start_t))
-            req.set("endDateTime", _parse_datetime(date, end_t))
-            if kwargs:
-                for k, v in kwargs.items():
-                    req.set(k, v)
-            blp_session.sendRequest(req)
-            ticks = []
-            truncated = False
-            for msg in _drain(blp_session):
-                if truncated:
-                    break
-                tick_data = msg.getElement("tickData").getElement("tickData")
-                for i in range(tick_data.numValues()):
-                    if len(ticks) >= max_rows:
-                        truncated = True
-                        break
-                    tick = tick_data.getValueAsElement(i)
-                    ticks.append({
-                        "time":  _to_value(tick.getElement("time")),
-                        "type":  tick.getElementAsString("type"),
-                        "value": tick.getElementAsFloat("value"),
-                        "size":  tick.getElementAsInteger("size") if tick.hasElement("size") else None,
-                    })
-            result = _csv(ticks)
-            if truncated:
-                result = f"# WARNING: truncated at {max_rows} rows — use time_range or max_rows to narrow\n" + result
-            return result
-        finally:
-            blp_session.stop()
-
-    @mcp.tool(
         name="earning",
         description="""Get Bloomberg earnings exposure breakdown by geography or business segment.
         Shows what percentage of a company's revenue/earnings comes from each region or product line.
@@ -501,7 +382,7 @@ def serve(args: types.StartupArgs):
           - 'What are MSFT business segments by operating income?' → by='Products', typ='Operating_Income'
         """
     )
-    async def earning(ticker: str, by: str = "Geo", typ: str = "Revenue", ccy: str | None = None, kwargs: dict[str, object] | None = None) -> str:
+    async def earning(ticker: str, by: str = "Geo", typ: str = "Revenue", ccy: str | None = None) -> str:
         # Map parameters to Bloomberg bulk fields
         field_map = {
             ("Geo",      "Revenue"):          "GEO_SEGMENT_SALES_PCTS",
@@ -510,9 +391,9 @@ def serve(args: types.StartupArgs):
             ("Products", "Operating_Income"): "PRODUCT_SEGMENT_OP_INC_PCTS",
         }
         fld = field_map.get((by, typ), "GEO_SEGMENT_SALES_PCTS")
-        overrides = dict(kwargs) if kwargs else {}
+        kv: dict[str, str] = {}
         if ccy:
-            overrides["EQY_FUND_CRNCY"] = ccy
+            kv["EQY_FUND_CRNCY"] = ccy
         session = _make_session()
         try:
             if not session.openService(_REFDATA):
@@ -521,9 +402,9 @@ def serve(args: types.StartupArgs):
             req = svc.createRequest("ReferenceDataRequest")
             req.append("securities", ticker)
             req.append("fields", fld)
-            if overrides:
+            if kv:
                 ovr = req.getElement("overrides")
-                for k, v in overrides.items():
+                for k, v in kv.items():
                     o = ovr.appendElement()
                     o.setElement("fieldId", k)
                     o.setElement("value", str(v))
@@ -564,13 +445,13 @@ def serve(args: types.StartupArgs):
         Returns: ex-date, declared date, record date, pay date, amount, split ratio, frequency, currency.
         """
     )
-    async def dividend(tickers: list[str], typ: str = "all", start_date: str | None = None, end_date: str | None = None, kwargs: dict[str, object] | None = None) -> str:
+    async def dividend(tickers: list[str], typ: str = "all", start_date: str | None = None, end_date: str | None = None) -> str:
         fld = "DVD_HIST_ALL" if typ == "all" else "DVD_HIST" if typ == "dividend" else "SPLIT_HIST"
-        overrides = dict(kwargs) if kwargs else {}
+        kv: dict[str, str] = {}
         if start_date:
-            overrides["DVD_START_DT"] = _fmt_date(start_date)
+            kv["DVD_START_DT"] = _fmt_date(start_date)
         if end_date:
-            overrides["DVD_END_DT"] = _fmt_date(end_date)
+            kv["DVD_END_DT"] = _fmt_date(end_date)
         session = _make_session()
         try:
             if not session.openService(_REFDATA):
@@ -580,9 +461,9 @@ def serve(args: types.StartupArgs):
             for t in tickers:
                 req.append("securities", t)
             req.append("fields", fld)
-            if overrides:
+            if kv:
                 ovr = req.getElement("overrides")
-                for k, v in overrides.items():
+                for k, v in kv.items():
                     o = ovr.appendElement()
                     o.setElement("fieldId", k)
                     o.setElement("value", str(v))
@@ -624,7 +505,7 @@ def serve(args: types.StartupArgs):
         Returns a list of securities matching the screen criteria.
         """
     )
-    async def beqs(screen: str, asof: str | None = None, typ: str = "PRIVATE", group: str = "General", kwargs: dict[str, object] | None = None) -> str:
+    async def beqs(screen: str, asof: str | None = None, typ: str = "PRIVATE", group: str = "General") -> str:
         session = _make_session()
         try:
             if not session.openService(_REFDATA):
@@ -634,17 +515,11 @@ def serve(args: types.StartupArgs):
             req.set("screenName", screen)
             req.set("screenType", typ)
             req.set("Group", group)
-            if asof or kwargs:
+            if asof:
                 ovr = req.getElement("overrides")
-                if asof:
-                    o = ovr.appendElement()
-                    o.setElement("fieldId", "REFERENCE_DATE")
-                    o.setElement("value", _fmt_date(asof))
-                if kwargs:
-                    for k, v in kwargs.items():
-                        o = ovr.appendElement()
-                        o.setElement("fieldId", k)
-                        o.setElement("value", str(v))
+                o = ovr.appendElement()
+                o.setElement("fieldId", "REFERENCE_DATE")
+                o.setElement("value", _fmt_date(asof))
             session.sendRequest(req)
             results = []
             for msg in _drain(session):
@@ -666,60 +541,6 @@ def serve(args: types.StartupArgs):
                         f"elements={elements}): {msg.toString()[:400]}"
                     )
             return _csv(results)
-        finally:
-            session.stop()
-
-    @mcp.tool(
-        name="turnover",
-        description="""Calculate daily trading turnover (value traded) for a basket of securities.
-        Fetches historical PX_LAST and PX_VOLUME then computes turnover = price × volume / factor.
-
-        Ticker format: same as bdp (e.g. 'AAPL US Equity')
-        start_date / end_date: 'YYYY-MM-DD' date range
-        ccy: informational label only — Bloomberg returns local currency values
-        factor: divisor to scale the result, default 1e6 (returns values in millions)
-
-        Example uses:
-          - Compare daily liquidity across a stock universe
-          - Filter out illiquid names from a portfolio
-          - Analyse volume patterns over time for execution planning
-        """
-    )
-    async def turnover(tickers: list[str], start_date: str | None = None, end_date: str | None = None, ccy: str = "USD", factor: float = 1e6) -> str:
-        session = _make_session()
-        try:
-            if not session.openService(_REFDATA):
-                raise RuntimeError(f"Failed to open {_REFDATA}")
-            svc = session.getService(_REFDATA)
-            req = svc.createRequest("HistoricalDataRequest")
-            for t in tickers:
-                req.append("securities", t)
-            req.append("fields", "PX_LAST")
-            req.append("fields", "PX_VOLUME")
-            if start_date:
-                req.set("startDate", _fmt_date(start_date))
-            req.set("endDate", _fmt_date(end_date or "today"))
-            req.set("periodicitySelection", "DAILY")
-            session.sendRequest(req)
-            result = {}
-            for msg in _drain(session):
-                sec_data = msg.getElement("securityData")
-                ticker = sec_data.getElementAsString("security")
-                fd_array = sec_data.getElement("fieldData")
-                rows = []
-                for i in range(fd_array.numValues()):
-                    row_elem = fd_array.getValueAsElement(i)
-                    date_val = _to_value(row_elem.getElement("date"))
-                    px = row_elem.getElementAsFloat("PX_LAST") if row_elem.hasElement("PX_LAST") else None
-                    vol = row_elem.getElementAsFloat("PX_VOLUME") if row_elem.hasElement("PX_VOLUME") else None
-                    tv = round((px * vol) / factor, 4) if px and vol else None
-                    rows.append({"date": date_val, "turnover": tv})
-                result[ticker] = rows
-            if len(result) == 1:
-                all_rows = [row for rows in result.values() for row in rows]
-            else:
-                all_rows = [{"ticker": ticker, **row} for ticker, rows in result.items() for row in rows]
-            return _csv(all_rows)
         finally:
             session.stop()
 
