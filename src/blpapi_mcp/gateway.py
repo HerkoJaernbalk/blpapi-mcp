@@ -226,29 +226,28 @@ def create_app(config: GatewayConfig) -> FastAPI:
 
     @app.get("/mcp")
     async def mcp_get_stream(request: Request) -> StreamingResponse:
+        import asyncio
         if config.require_auth:
             token = _extract_bearer_token(request)
             if not token or token not in config.auth_tokens:
                 return JSONResponse(status_code=401, content=_jsonrpc_error(None, -32001, "Unauthorized"))
 
-        upstream_headers = {"accept": "text/event-stream"}
-        for header_name in ("mcp-session-id", "mcp-protocol-version", "last-event-id"):
-            if request.headers.get(header_name):
-                upstream_headers[header_name] = request.headers[header_name]
+        response_headers: dict[str, str] = {"cache-control": "no-cache, no-transform", "connection": "keep-alive"}
+        if request.headers.get("mcp-session-id"):
+            response_headers["mcp-session-id"] = request.headers["mcp-session-id"]
 
-        async def stream_sse():
+        async def heartbeat():
             try:
-                async with httpx.AsyncClient(timeout=None) as client:
-                    async with client.stream("GET", config.worker_mcp_url, headers=upstream_headers) as upstream:
-                        async for chunk in upstream.aiter_bytes():
-                            yield chunk
+                while True:
+                    yield b": ping\n\n"
+                    await asyncio.sleep(15)
             except Exception:
-                logger.exception("GET /mcp SSE stream error")
+                pass
 
         return StreamingResponse(
-            stream_sse(),
+            heartbeat(),
             media_type="text/event-stream",
-            headers={"cache-control": "no-cache, no-transform", "connection": "keep-alive"},
+            headers=response_headers,
         )
 
     @app.options("/mcp")
