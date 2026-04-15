@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 
 DEFAULT_ALLOWED_TOOLS = {
@@ -225,12 +225,31 @@ def create_app(config: GatewayConfig) -> FastAPI:
         return {"ok": True}
 
     @app.get("/mcp")
-    async def mcp_info() -> dict[str, Any]:
-        return {
-            "name": "blpapi-mcp-gateway",
-            "status": "ok",
-            "message": "Use POST /mcp for JSON-RPC requests.",
-        }
+    async def mcp_get_stream(request: Request) -> StreamingResponse:
+        if config.require_auth:
+            token = _extract_bearer_token(request)
+            if not token or token not in config.auth_tokens:
+                return JSONResponse(status_code=401, content=_jsonrpc_error(None, -32001, "Unauthorized"))
+
+        upstream_headers = {"accept": "text/event-stream"}
+        for header_name in ("mcp-session-id", "mcp-protocol-version", "last-event-id"):
+            if request.headers.get(header_name):
+                upstream_headers[header_name] = request.headers[header_name]
+
+        async def stream_sse():
+            try:
+                async with httpx.AsyncClient(timeout=None) as client:
+                    async with client.stream("GET", config.worker_mcp_url, headers=upstream_headers) as upstream:
+                        async for chunk in upstream.aiter_bytes():
+                            yield chunk
+            except Exception:
+                logger.exception("GET /mcp SSE stream error")
+
+        return StreamingResponse(
+            stream_sse(),
+            media_type="text/event-stream",
+            headers={"cache-control": "no-cache, no-transform", "connection": "keep-alive"},
+        )
 
     @app.options("/mcp")
     async def mcp_options() -> Response:
