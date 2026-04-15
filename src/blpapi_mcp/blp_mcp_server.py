@@ -169,8 +169,13 @@ def serve(args: types.StartupArgs):
           - NEVER use BEST_EPS_NXT_YR — use BEST_EPS with BEST_FPERIOD_OVERRIDE instead
           - IS_COMP_* fields are for historical actuals only
 
-        overrides: Bloomberg field overrides as a list of "KEY=VALUE" strings.
-          e.g. ["BEST_FPERIOD_OVERRIDE=2026Y", "EQY_FUND_CRNCY=USD"]
+        fperiod_override: fiscal period for consensus estimates (BEST_FPERIOD_OVERRIDE).
+          e.g. '2026Y', '2027Y', '2026Q1'
+
+        currency: report values in this currency (EQY_FUND_CRNCY).
+          e.g. 'USD', 'EUR', 'SEK'
+
+        overrides: any other Bloomberg field overrides as "KEY=VALUE" strings.
 
         BEST_FPERIOD_OVERRIDE format:
           "2026Y"  — fiscal year 2026
@@ -179,18 +184,18 @@ def serve(args: types.StartupArgs):
           "2026Q2" — Q2 2026
           "2027Q4" — Q4 2027
 
-        Example — FY2026 and FY2027 consensus estimates:
+        Example — FY2026 consensus estimates:
           bdp(tickers=['VOLVB SS Equity'],
               flds=['BEST_EPS', 'BEST_SALES', 'BEST_EBIT'],
-              overrides=['BEST_FPERIOD_OVERRIDE=2026Y'])
+              fperiod_override='2026Y')
 
         Example — Q1 2026 consensus estimates:
           bdp(tickers=['VOLVB SS Equity'],
               flds=['BEST_EPS', 'BEST_SALES', 'BEST_EBIT'],
-              overrides=['BEST_FPERIOD_OVERRIDE=2026Q1'])
+              fperiod_override='2026Q1')
         """
     )
-    async def bdp(tickers: list[str], flds: list[str], overrides: list[str] | None = None) -> str:
+    async def bdp(tickers: list[str], flds: list[str], fperiod_override: str | None = None, currency: str | None = None, overrides: list[str] | None = None) -> str:
         session = _make_session()
         try:
             if not session.openService(_REFDATA):
@@ -202,6 +207,10 @@ def serve(args: types.StartupArgs):
             for f in flds:
                 req.append("fields", f)
             kv = dict(s.split("=", 1) for s in (overrides or []))
+            if fperiod_override:
+                kv["BEST_FPERIOD_OVERRIDE"] = fperiod_override
+            if currency:
+                kv["EQY_FUND_CRNCY"] = currency
             if kv:
                 ovr = req.getElement("overrides")
                 for k, v in kv.items():
@@ -250,7 +259,7 @@ def serve(args: types.StartupArgs):
                         DEBT_STRUCTURE (full debt breakdown)
         """
     )
-    async def bds(tickers: list[str], flds: list[str], overrides: list[str] | None = None) -> str:
+    async def bds(tickers: list[str], flds: list[str], fperiod_override: str | None = None, currency: str | None = None, overrides: list[str] | None = None) -> str:
         session = _make_session()
         try:
             if not session.openService(_REFDATA):
@@ -262,6 +271,10 @@ def serve(args: types.StartupArgs):
             for f in flds:
                 req.append("fields", f)
             kv = dict(s.split("=", 1) for s in (overrides or []))
+            if fperiod_override:
+                kv["BEST_FPERIOD_OVERRIDE"] = fperiod_override
+            if currency:
+                kv["EQY_FUND_CRNCY"] = currency
             if kv:
                 ovr = req.getElement("overrides")
                 for k, v in kv.items():
@@ -318,7 +331,7 @@ def serve(args: types.StartupArgs):
           For estimates use periodicity='QUARTERLY' or 'YEARLY' with BEST_EPS, BEST_SALES etc.
         """
     )
-    async def bdh(tickers: list[str], flds: list[str], start_date: str | None = None, end_date: str = "today", periodicity: str = "DAILY", adjust: str | None = None, overrides: list[str] | None = None) -> str:
+    async def bdh(tickers: list[str], flds: list[str], start_date: str | None = None, end_date: str = "today", periodicity: str = "DAILY", adjust: str | None = None, fperiod_override: str | None = None, currency: str | None = None, overrides: list[str] | None = None) -> str:
         session = _make_session()
         try:
             if not session.openService(_REFDATA):
@@ -339,6 +352,10 @@ def serve(args: types.StartupArgs):
             if adjust in ("all", "split"):
                 req.set("adjustmentSplit", True)
             kv = dict(s.split("=", 1) for s in (overrides or []))
+            if fperiod_override:
+                kv["BEST_FPERIOD_OVERRIDE"] = fperiod_override
+            if currency:
+                kv["EQY_FUND_CRNCY"] = currency
             if kv:
                 ovr = req.getElement("overrides")
                 for k, v in kv.items():
