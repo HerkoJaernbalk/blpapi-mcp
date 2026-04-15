@@ -136,7 +136,7 @@ def _csv(rows: list[dict]) -> str:
 
 
 def serve(args: types.StartupArgs):
-    mcp = FastMCP("blpapi-mcp", host=args.host, port=args.port)
+    mcp = FastMCP("blpapi-mcp", host=args.host, port=args.port, json_response=True)
     logger = get_logger(__name__)
     logger.info("startup args:" + str(args))
     logger.info("blpapi version:" + blpapi.version())  # type: ignore
