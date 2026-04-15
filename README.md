@@ -45,5 +45,11 @@ blpapi-gateway-chatgpt --host 0.0.0.0 --port 8443
 ## Install
 
 ```bash
-uv sync
+uv tool install "git+https://github.com/HerkoJaernbalk/blpapi-mcp@chatgpt" --extra-index-url https://blpapi.bloomberg.com/repository/releases/python/simple/
+```
+
+## Update
+
+```bash
+uv tool install --force "git+https://github.com/HerkoJaernbalk/blpapi-mcp@chatgpt" --extra-index-url https://blpapi.bloomberg.com/repository/releases/python/simple/
 ```
