@@ -173,7 +173,15 @@ def _filter_tools_list_response(data: Any, allowed_tools: set[str]) -> Any:
     tools = result.get("tools")
     if not isinstance(tools, list):
         return data
-    result["tools"] = [t for t in tools if isinstance(t, dict) and t.get("name") in allowed_tools]
+    filtered_tools = [t for t in tools if isinstance(t, dict) and t.get("name") in allowed_tools]
+    for tool in filtered_tools:
+        tool.pop("outputSchema", None)
+        tool.setdefault("securitySchemes", [{"type": "noauth"}])
+        annotations = tool.setdefault("annotations", {})
+        annotations.setdefault("readOnlyHint", True)
+        annotations.setdefault("destructiveHint", False)
+        annotations.setdefault("openWorldHint", False)
+    result["tools"] = filtered_tools
     return data
 
 
@@ -226,26 +234,37 @@ def create_app(config: GatewayConfig) -> FastAPI:
 
     @app.get("/mcp")
     async def mcp_get_stream(request: Request) -> StreamingResponse:
-        import asyncio
         if config.require_auth:
             token = _extract_bearer_token(request)
             if not token or token not in config.auth_tokens:
                 return JSONResponse(status_code=401, content=_jsonrpc_error(None, -32001, "Unauthorized"))
 
+        upstream_headers = {"accept": request.headers.get("accept", "text/event-stream")}
+        for header_name in ("mcp-session-id", "mcp-protocol-version", "last-event-id"):
+            if request.headers.get(header_name):
+                upstream_headers[header_name] = request.headers[header_name]
+        logger.info(
+            "mcp get stream accept=%s session=%s protocol=%s",
+            request.headers.get("accept", ""),
+            request.headers.get("mcp-session-id", ""),
+            request.headers.get("mcp-protocol-version", ""),
+        )
+
+        async def upstream_stream():
+            try:
+                async with httpx.AsyncClient(timeout=None) as client:
+                    async with client.stream("GET", config.worker_mcp_url, headers=upstream_headers) as upstream:
+                        async for chunk in upstream.aiter_bytes():
+                            yield chunk
+            except Exception:
+                logger.exception("upstream GET stream error")
+                return
+
         response_headers: dict[str, str] = {"cache-control": "no-cache, no-transform", "connection": "keep-alive"}
         if request.headers.get("mcp-session-id"):
             response_headers["mcp-session-id"] = request.headers["mcp-session-id"]
-
-        async def heartbeat():
-            try:
-                while True:
-                    yield b": ping\n\n"
-                    await asyncio.sleep(15)
-            except Exception:
-                pass
-
         return StreamingResponse(
-            heartbeat(),
+            upstream_stream(),
             media_type="text/event-stream",
             headers=response_headers,
         )
@@ -319,6 +338,31 @@ def create_app(config: GatewayConfig) -> FastAPI:
             if request.headers.get(header_name):
                 upstream_headers[header_name] = request.headers[header_name]
 
+        if method == "notifications/initialized":
+            try:
+                async with httpx.AsyncClient(timeout=config.forward_timeout_sec) as client:
+                    upstream = await client.post(
+                        config.worker_mcp_url,
+                        content=body,
+                        headers=upstream_headers,
+                    )
+                logger.info(
+                    "initialized notification forwarded status=%s upstream_content_type=%s session=%s",
+                    upstream.status_code,
+                    upstream.headers.get("content-type", ""),
+                    request.headers.get("mcp-session-id", ""),
+                )
+                response_headers = {"x-gateway": "blpapi-mcp-gateway"}
+                if request.headers.get("mcp-session-id"):
+                    response_headers["mcp-session-id"] = request.headers["mcp-session-id"]
+                return Response(status_code=upstream.status_code, headers=response_headers)
+            except Exception:
+                logger.exception("initialized notification forwarding error")
+                return JSONResponse(
+                    status_code=502,
+                    content=_jsonrpc_error(req_id, -32020, "Upstream connection error"),
+                )
+
         if method == "tools/list":
             # tools/list responses are tiny; fetch and filter in-memory before returning.
             try:
@@ -350,6 +394,15 @@ def create_app(config: GatewayConfig) -> FastAPI:
                     response_headers["mcp-session-id"] = upstream.headers["mcp-session-id"]
                 if upstream.headers.get("mcp-protocol-version"):
                     response_headers["mcp-protocol-version"] = upstream.headers["mcp-protocol-version"]
+                request_accept = request.headers.get("accept", "")
+                if "text/event-stream" in request_accept and "application/json" not in request_accept:
+                    body = f"event: message\ndata: {json.dumps(filtered, separators=(',', ':'))}\n\n"
+                    return Response(
+                        content=body,
+                        status_code=upstream.status_code,
+                        headers=response_headers,
+                        media_type="text/event-stream",
+                    )
                 return JSONResponse(content=filtered, status_code=upstream.status_code, headers=response_headers)
             except Exception:
                 logger.exception("tools/list forwarding error")
@@ -375,14 +428,15 @@ def create_app(config: GatewayConfig) -> FastAPI:
                 passthrough_headers["mcp-protocol-version"] = upstream.headers["mcp-protocol-version"]
             upstream_content_type = upstream.headers.get("content-type", "application/json")
             media_type = upstream_content_type.split(";", 1)[0].strip() or "application/json"
-            if media_type == "text/event-stream":
-                parsed = _parse_sse_json_payload(upstream.text)
-                if isinstance(parsed, dict):
-                    return JSONResponse(
-                        content=parsed,
-                        status_code=upstream.status_code,
-                        headers=passthrough_headers,
-                    )
+            request_accept = request.headers.get("accept", "")
+            if "text/event-stream" in request_accept and "application/json" not in request_accept and media_type == "application/json":
+                sse_body = f"event: message\ndata: {upstream.content.decode('utf-8')}\n\n"
+                return Response(
+                    content=sse_body,
+                    media_type="text/event-stream",
+                    headers=passthrough_headers,
+                    status_code=upstream.status_code,
+                )
             return Response(
                 content=upstream.content,
                 media_type=media_type,
