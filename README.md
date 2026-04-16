@@ -77,16 +77,6 @@ Connect clients to: http://192.168.x.x:8080/mcp
 Use the IP from the second line in the client config below.
 
 
-## Access Bloomberg on the Go
-
-Once Claude Desktop is running on your Bloomberg Terminal machine, you can access Bloomberg data from anywhere using [Claude for iPhone](https://apps.apple.com/app/claude-ai/id6473753684) with the **Dispatch** feature.
-
-Dispatch lets your phone connect to Claude Desktop running on your local machine, meaning you can pull Bloomberg data and do financial analysis on the go — as long as your Bloomberg Terminal machine is on and Claude Desktop is running.
-
-The real power here is what Claude can do with the data: pull and compare metrics across dozens of securities in one prompt, run cross-sectional analysis, generate charts, and produce written summaries — all through natural conversation. No manual lookups, no repetitive navigation.
-
-Any analysis Claude produces can be saved directly to your computer in any format — Excel, PowerPoint, Word, PDF, or others. Claude will ask where to save the file and prompt you to grant folder access the first time. Once permitted, files land on your computer ready to use.
-
 ## Updating
 
 To update to the latest version:
