@@ -14,7 +14,6 @@ from . import types
 
 
 _REFDATA      = "//blp/refdata"
-_EXRSVC       = "//blp/exrsvc"
 _BQLSVC       = "//blp/bqlsvc"
 _INSTRUMENTS  = "//blp/instruments"
 
@@ -135,14 +134,46 @@ def _csv(rows: list[dict]) -> str:
     return out.getvalue()
 
 
+def _set_overrides(req, overrides: dict) -> None:
+    """Apply Bloomberg field overrides to a request element."""
+    ovr = req.getElement("overrides")
+    for k, v in overrides.items():
+        o = ovr.appendElement()
+        o.setElement("fieldId", k)
+        o.setElement("value", str(v))
+
+
+def _bbg_error(err) -> str:
+    """Extract a human-readable message from a Bloomberg responseError element."""
+    code = err.getElementAsInteger("code") if err.hasElement("code") else "?"
+    message = err.getElementAsString("message") if err.hasElement("message") else str(err)
+    return f"error {code}: {message}"
+
+
+def _check_operation(svc, op_name: str) -> None:
+    """Raise RuntimeError if op_name is not available on the Bloomberg service."""
+    ops = [svc.getOperation(i).name() for i in range(svc.numOperations())]
+    if op_name not in ops:
+        raise RuntimeError(f"{op_name} not available on service; available: {ops}")
+
+
+_READ_ONLY_HINTS = {
+    "readOnlyHint": True,
+    "destructiveHint": False,
+    "idempotentHint": True,
+    "openWorldHint": True,
+}
+
+
 def serve(args: types.StartupArgs):
-    mcp = FastMCP("blpapi-mcp", host=args.host, port=args.port)
+    mcp = FastMCP("blpapi_mcp", host=args.host, port=args.port)
     logger = get_logger(__name__)
     logger.info("startup args:" + str(args))
     logger.info("blpapi version:" + blpapi.version())  # type: ignore
 
     @mcp.tool(
         name="bdp",
+        annotations=_READ_ONLY_HINTS,
         description="""Get Bloomberg reference/snapshot data for one or more securities.
         Returns the latest value for each requested field.
 
@@ -214,11 +245,7 @@ def serve(args: types.StartupArgs):
             for f in flds:
                 req.append("fields", f)
             if kwargs:
-                ovr = req.getElement("overrides")
-                for k, v in kwargs.items():
-                    o = ovr.appendElement()
-                    o.setElement("fieldId", k)
-                    o.setElement("value", str(v))
+                _set_overrides(req, kwargs)
             session.sendRequest(req)
             result = {}
             for msg in _drain(session):
@@ -241,6 +268,7 @@ def serve(args: types.StartupArgs):
 
     @mcp.tool(
         name="bds",
+        annotations=_READ_ONLY_HINTS,
         description="""Get Bloomberg bulk/block data — returns multi-row datasets for a security.
         Use this when a field returns a table of data rather than a single value.
 
@@ -273,11 +301,7 @@ def serve(args: types.StartupArgs):
             for f in flds:
                 req.append("fields", f)
             if kwargs:
-                ovr = req.getElement("overrides")
-                for k, v in kwargs.items():
-                    o = ovr.appendElement()
-                    o.setElement("fieldId", k)
-                    o.setElement("value", str(v))
+                _set_overrides(req, kwargs)
             session.sendRequest(req)
             result = {}
             for msg in _drain(session):
@@ -314,6 +338,7 @@ def serve(args: types.StartupArgs):
 
     @mcp.tool(
         name="bdh",
+        annotations=_READ_ONLY_HINTS,
         description="""Get Bloomberg historical time series data for one or more securities.
         Returns historical data between start_date and end_date.
 
@@ -349,11 +374,7 @@ def serve(args: types.StartupArgs):
             if adjust in ("all", "split"):
                 req.set("adjustmentSplit", True)
             if kwargs:
-                ovr = req.getElement("overrides")
-                for k, v in kwargs.items():
-                    o = ovr.appendElement()
-                    o.setElement("fieldId", k)
-                    o.setElement("value", str(v))
+                _set_overrides(req, kwargs)
             session.sendRequest(req)
             result = {}
             for msg in _drain(session):
@@ -378,6 +399,7 @@ def serve(args: types.StartupArgs):
 
     @mcp.tool(
         name="bdib",
+        annotations=_READ_ONLY_HINTS,
         description="""Get Bloomberg intraday bar data for a single security on a specific date.
         Returns OHLCV bars aggregated at a given interval (default 1 minute).
 
@@ -428,6 +450,7 @@ def serve(args: types.StartupArgs):
 
     @mcp.tool(
         name="bdtick",
+        annotations=_READ_ONLY_HINTS,
         description="""Get Bloomberg tick-by-tick trade and quote data for a single security on a specific date.
         Returns every individual trade or quote event — much more granular than intraday bars.
 
@@ -488,6 +511,7 @@ def serve(args: types.StartupArgs):
 
     @mcp.tool(
         name="earning",
+        annotations=_READ_ONLY_HINTS,
         description="""Get Bloomberg earnings exposure breakdown by geography or business segment.
         Shows what percentage of a company's revenue/earnings comes from each region or product line.
 
@@ -522,11 +546,7 @@ def serve(args: types.StartupArgs):
             req.append("securities", ticker)
             req.append("fields", fld)
             if overrides:
-                ovr = req.getElement("overrides")
-                for k, v in overrides.items():
-                    o = ovr.appendElement()
-                    o.setElement("fieldId", k)
-                    o.setElement("value", str(v))
+                _set_overrides(req, overrides)
             session.sendRequest(req)
             result = {}
             for msg in _drain(session):
@@ -554,6 +574,7 @@ def serve(args: types.StartupArgs):
 
     @mcp.tool(
         name="dividend",
+        annotations=_READ_ONLY_HINTS,
         description="""Get Bloomberg dividend and stock split history for one or more securities.
         Returns historical dividend payments and stock split events.
 
@@ -581,11 +602,7 @@ def serve(args: types.StartupArgs):
                 req.append("securities", t)
             req.append("fields", fld)
             if overrides:
-                ovr = req.getElement("overrides")
-                for k, v in overrides.items():
-                    o = ovr.appendElement()
-                    o.setElement("fieldId", k)
-                    o.setElement("value", str(v))
+                _set_overrides(req, overrides)
             session.sendRequest(req)
             result = {}
             for msg in _drain(session):
@@ -613,6 +630,7 @@ def serve(args: types.StartupArgs):
 
     @mcp.tool(
         name="beqs",
+        annotations=_READ_ONLY_HINTS,
         description="""Run a saved Bloomberg equity screen (EQS) and return matching securities.
         Screens must be pre-built and saved in Bloomberg Terminal under EQS <GO>.
 
@@ -634,25 +652,18 @@ def serve(args: types.StartupArgs):
             req.set("screenName", screen)
             req.set("screenType", typ)
             req.set("Group", group)
-            if asof or kwargs:
-                ovr = req.getElement("overrides")
-                if asof:
-                    o = ovr.appendElement()
-                    o.setElement("fieldId", "REFERENCE_DATE")
-                    o.setElement("value", _fmt_date(asof))
-                if kwargs:
-                    for k, v in kwargs.items():
-                        o = ovr.appendElement()
-                        o.setElement("fieldId", k)
-                        o.setElement("value", str(v))
+            overrides: dict = {}
+            if asof:
+                overrides["REFERENCE_DATE"] = _fmt_date(asof)
+            if kwargs:
+                overrides.update(kwargs)
+            if overrides:
+                _set_overrides(req, overrides)
             session.sendRequest(req)
             results = []
             for msg in _drain(session):
                 if msg.hasElement("responseError"):
-                    err = msg.getElement("responseError")
-                    code = err.getElementAsInteger("code") if err.hasElement("code") else "?"
-                    message = err.getElementAsString("message") if err.hasElement("message") else str(err)
-                    raise RuntimeError(f"BeqsRequest error {code}: {message}")
+                    raise RuntimeError(f"BeqsRequest {_bbg_error(msg.getElement('responseError'))}")
                 if msg.hasElement("data"):
                     sec_data = msg.getElement("data").getElement("securityData")
                     for i in range(sec_data.numValues()):
@@ -671,6 +682,7 @@ def serve(args: types.StartupArgs):
 
     @mcp.tool(
         name="turnover",
+        annotations=_READ_ONLY_HINTS,
         description="""Calculate daily trading turnover (value traded) for a basket of securities.
         Fetches historical PX_LAST and PX_VOLUME then computes turnover = price × volume / factor.
 
@@ -725,6 +737,7 @@ def serve(args: types.StartupArgs):
 
     @mcp.tool(
         name="bql",
+        annotations=_READ_ONLY_HINTS,
         description="""Run a Bloomberg Query Language (BQL) query. More powerful than bdp/bdh for
         estimates, financials, cross-sectional screens, and derived calculations.
 
@@ -803,6 +816,7 @@ def serve(args: types.StartupArgs):
 
     @mcp.tool(
         name="instruments",
+        annotations=_READ_ONLY_HINTS,
         description="""Search for Bloomberg securities by name or keyword using //blp/instruments.
 
         query: search string e.g. company name "Volvo" or "Apple"
@@ -821,11 +835,7 @@ def serve(args: types.StartupArgs):
             if not session.openService(_INSTRUMENTS):
                 raise RuntimeError(f"Failed to open {_INSTRUMENTS}")
             svc = session.getService(_INSTRUMENTS)
-            ops = [svc.getOperation(i).name() for i in range(svc.numOperations())]
-            if "instrumentListRequest" not in ops:
-                raise RuntimeError(
-                    f"instrumentListRequest not available on {_INSTRUMENTS}; available: {ops}"
-                )
+            _check_operation(svc, "instrumentListRequest")
             yk = _YK_FILTER.get(typ)
             if yk is None:
                 raise ValueError(f"Unknown typ {typ!r}. Valid values: {list(_YK_FILTER)}")
@@ -837,10 +847,7 @@ def serve(args: types.StartupArgs):
             results = []
             for msg in _drain(session):
                 if msg.hasElement("responseError"):
-                    err = msg.getElement("responseError")
-                    code = err.getElementAsInteger("code") if err.hasElement("code") else "?"
-                    message = err.getElementAsString("message") if err.hasElement("message") else str(err)
-                    raise RuntimeError(f"instrumentListRequest error {code}: {message}")
+                    raise RuntimeError(f"instrumentListRequest {_bbg_error(msg.getElement('responseError'))}")
                 elif msg.hasElement("results"):
                     res = msg.getElement("results")
                     for i in range(res.numValues()):
@@ -863,6 +870,7 @@ def serve(args: types.StartupArgs):
 
     @mcp.tool(
         name="curve_list",
+        annotations=_READ_ONLY_HINTS,
         description="""Search for Bloomberg yield curves by name or keyword using //blp/instruments curveListRequest.
 
         query: search string e.g. 'USD swap' or 'EUR govt'
@@ -878,11 +886,7 @@ def serve(args: types.StartupArgs):
             if not session.openService(_INSTRUMENTS):
                 raise RuntimeError(f"Failed to open {_INSTRUMENTS}")
             svc = session.getService(_INSTRUMENTS)
-            ops = [svc.getOperation(i).name() for i in range(svc.numOperations())]
-            if "curveListRequest" not in ops:
-                raise RuntimeError(
-                    f"curveListRequest not available on {_INSTRUMENTS}; available: {ops}"
-                )
+            _check_operation(svc, "curveListRequest")
             req = svc.createRequest("curveListRequest")
             req.set("query", query)
             req.set("maxResults", max_results)
@@ -890,10 +894,7 @@ def serve(args: types.StartupArgs):
             results = []
             for msg in _drain(session):
                 if msg.hasElement("responseError"):
-                    err = msg.getElement("responseError")
-                    code = err.getElementAsInteger("code") if err.hasElement("code") else "?"
-                    message = err.getElementAsString("message") if err.hasElement("message") else str(err)
-                    raise RuntimeError(f"curveListRequest error {code}: {message}")
+                    raise RuntimeError(f"curveListRequest {_bbg_error(msg.getElement('responseError'))}")
                 elif msg.hasElement("results"):
                     res = msg.getElement("results")
                     for i in range(res.numValues()):
@@ -917,6 +918,7 @@ def serve(args: types.StartupArgs):
 
     @mcp.tool(
         name="govt_list",
+        annotations=_READ_ONLY_HINTS,
         description="""Search for Bloomberg government bonds by partial ticker using //blp/instruments govtListRequest.
 
         query: partial ticker or search string e.g. 'T' (US Treasuries), 'DBR' (German Bunds), 'UKT' (Gilts)
@@ -932,11 +934,7 @@ def serve(args: types.StartupArgs):
             if not session.openService(_INSTRUMENTS):
                 raise RuntimeError(f"Failed to open {_INSTRUMENTS}")
             svc = session.getService(_INSTRUMENTS)
-            ops = [svc.getOperation(i).name() for i in range(svc.numOperations())]
-            if "govtListRequest" not in ops:
-                raise RuntimeError(
-                    f"govtListRequest not available on {_INSTRUMENTS}; available: {ops}"
-                )
+            _check_operation(svc, "govtListRequest")
             req = svc.createRequest("govtListRequest")
             req.set("query", query)
             req.set("maxResults", max_results)
@@ -944,10 +942,7 @@ def serve(args: types.StartupArgs):
             results = []
             for msg in _drain(session):
                 if msg.hasElement("responseError"):
-                    err = msg.getElement("responseError")
-                    code = err.getElementAsInteger("code") if err.hasElement("code") else "?"
-                    message = err.getElementAsString("message") if err.hasElement("message") else str(err)
-                    raise RuntimeError(f"govtListRequest error {code}: {message}")
+                    raise RuntimeError(f"govtListRequest {_bbg_error(msg.getElement('responseError'))}")
                 elif msg.hasElement("results"):
                     res = msg.getElement("results")
                     for i in range(res.numValues()):
