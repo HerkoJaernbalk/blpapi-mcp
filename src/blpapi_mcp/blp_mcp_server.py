@@ -16,6 +16,7 @@ from . import types
 _REFDATA      = "//blp/refdata"
 _BQLSVC       = "//blp/bqlsvc"
 _INSTRUMENTS  = "//blp/instruments"
+_APIFLDS      = "//blp/apiflds"
 
 _TIMEOUT = 10_000  # ms
 
@@ -176,6 +177,8 @@ def serve(args: types.StartupArgs):
         annotations=_READ_ONLY_HINTS,
         description="""Get Bloomberg reference/snapshot data for one or more securities.
         Returns the latest value for each requested field.
+
+        If you don't know the mnemonic for a field, call `field_search` first — don't guess.
 
         Ticker format examples:
           Equities:    'AAPL US Equity', 'MSFT US Equity', 'BP/ LN Equity', 'SAP GY Equity'
@@ -341,6 +344,8 @@ def serve(args: types.StartupArgs):
         annotations=_READ_ONLY_HINTS,
         description="""Get Bloomberg historical time series data for one or more securities.
         Returns historical data between start_date and end_date.
+
+        If you don't know the mnemonic for a field, call `field_search` first — don't guess.
 
         Ticker format: same as bdp (e.g. 'AAPL US Equity')
         Date format: 'YYYY-MM-DD' or 'today'
@@ -958,6 +963,155 @@ def serve(args: types.StartupArgs):
                         f"Unexpected govtListRequest response (type={msg.messageType()}, "
                         f"elements={elements}): {msg.toString()[:400]}"
                     )
+            return _csv(results)
+        finally:
+            session.stop()
+
+    @mcp.tool(
+        name="field_search",
+        annotations=_READ_ONLY_HINTS,
+        description="""Search the Bloomberg field dictionary for fields matching a free-text query.
+        This is the API equivalent of FLDS <GO> on the Terminal — use it when you don't know the
+        exact Bloomberg mnemonic for a concept.
+
+        Bloomberg field naming is inconsistent across BEST_*, EST_*, BN_*, ARDR_*, BF_xxx etc.
+        — do NOT guess. Call `field_search` first, then `field_info` to confirm, then bdp/bdh.
+
+        Examples of when to call:
+          - 'I need order intake'        -> field_search('order intake')
+          - 'I need book-to-bill'        -> field_search('book to bill')
+          - 'I need same-store sales'    -> field_search('same store sales')
+          - 'I need consensus EBITDA'    -> field_search('EBITDA margin consensus')
+
+        Args:
+          query: Free-text search, similar to what you'd type in FLDS <GO>.
+          field_type: 'Any' (default), 'Static' (narrows to fundamentals/estimates usable with
+            bdp/bdh), or 'RealTime' (streaming fields).
+          include_documentation: Include the longer field documentation string. Default False
+            to keep search responses compact — use `field_info` for the full doc.
+          max_results: Cap on rows returned. Default 50.
+
+        Returns CSV with columns: field_id, mnemonic, description, category, datatype,
+        and documentation (if include_documentation=True).
+        """
+    )
+    async def field_search(query: str, field_type: str = "Any", include_documentation: bool = False, max_results: int = 50) -> str:
+        if field_type not in ("Any", "Static", "RealTime"):
+            raise ValueError(f"Unknown field_type {field_type!r}. Valid: Any, Static, RealTime")
+        session = _make_session()
+        try:
+            if not session.openService(_APIFLDS):
+                raise RuntimeError(f"Failed to open {_APIFLDS}")
+            svc = session.getService(_APIFLDS)
+            req = svc.createRequest("FieldSearchRequest")
+            req.set("searchSpec", query)
+            if field_type == "Static":
+                req.getElement("exclude").setElement("fieldType", "RealTime")
+            elif field_type == "RealTime":
+                req.getElement("exclude").setElement("fieldType", "Static")
+            req.set("returnFieldDocumentation", bool(include_documentation))
+            session.sendRequest(req)
+            results: list[dict] = []
+            for msg in _drain(session):
+                if msg.hasElement("responseError"):
+                    raise RuntimeError(f"FieldSearchRequest {_bbg_error(msg.getElement('responseError'))}")
+                if not msg.hasElement("fieldData"):
+                    continue
+                fd_array = msg.getElement("fieldData")
+                for i in range(fd_array.numValues()):
+                    if len(results) >= max_results:
+                        break
+                    fd = fd_array.getValueAsElement(i)
+                    row: dict = {}
+                    if fd.hasElement("id"):
+                        row["field_id"] = fd.getElementAsString("id")
+                    if fd.hasElement("fieldInfo"):
+                        info = fd.getElement("fieldInfo")
+                        for src, dst in (("mnemonic", "mnemonic"),
+                                         ("description", "description"),
+                                         ("categoryName", "category"),
+                                         ("datatype", "datatype")):
+                            if info.hasElement(src):
+                                row[dst] = info.getElementAsString(src)
+                        if include_documentation and info.hasElement("documentation"):
+                            row["documentation"] = info.getElementAsString("documentation")
+                    results.append(row)
+                if len(results) >= max_results:
+                    break
+            return _csv(results)
+        finally:
+            session.stop()
+
+    @mcp.tool(
+        name="field_info",
+        annotations=_READ_ONLY_HINTS,
+        description="""Look up full metadata and documentation for one or more known Bloomberg
+        field mnemonics. Use this after `field_search` to confirm the exact field to use and
+        to learn about required overrides (e.g. BEST_FPERIOD_OVERRIDE) before calling bdp/bdh.
+
+        Bloomberg field naming is inconsistent across BEST_*, EST_*, BN_*, ARDR_*, BF_xxx etc.
+        — do NOT guess. Call `field_search` first, then `field_info` to confirm, then bdp/bdh.
+
+        Args:
+          mnemonics: List of field mnemonics or IDs (e.g. ['BEST_SALES', 'PX_LAST']).
+          include_documentation: Include the long-form documentation. Default True — this is
+            the high-value piece for field_info.
+
+        Returns CSV with columns: field_id, mnemonic, description, category, datatype,
+        documentation, overrides (semicolon-separated override mnemonics, if any),
+        error (populated if the mnemonic was invalid — other fields will be empty).
+        """
+    )
+    async def field_info(mnemonics: list[str], include_documentation: bool = True) -> str:
+        if not mnemonics:
+            raise ValueError("mnemonics must not be empty")
+        session = _make_session()
+        try:
+            if not session.openService(_APIFLDS):
+                raise RuntimeError(f"Failed to open {_APIFLDS}")
+            svc = session.getService(_APIFLDS)
+            req = svc.createRequest("FieldInfoRequest")
+            for m in mnemonics:
+                req.append("id", m)
+            req.set("returnFieldDocumentation", bool(include_documentation))
+            session.sendRequest(req)
+            results: list[dict] = []
+            for msg in _drain(session):
+                if msg.hasElement("responseError"):
+                    raise RuntimeError(f"FieldInfoRequest {_bbg_error(msg.getElement('responseError'))}")
+                if not msg.hasElement("fieldData"):
+                    continue
+                fd_array = msg.getElement("fieldData")
+                for i in range(fd_array.numValues()):
+                    fd = fd_array.getValueAsElement(i)
+                    row: dict = {}
+                    if fd.hasElement("id"):
+                        row["field_id"] = fd.getElementAsString("id")
+                    if fd.hasElement("fieldError"):
+                        err = fd.getElement("fieldError")
+                        if err.hasElement("message"):
+                            row["error"] = err.getElementAsString("message")
+                        elif err.hasElement("errorResponse") and err.getElement("errorResponse").hasElement("message"):
+                            row["error"] = err.getElement("errorResponse").getElementAsString("message")
+                        else:
+                            row["error"] = str(err)
+                    elif fd.hasElement("fieldInfo"):
+                        info = fd.getElement("fieldInfo")
+                        for src, dst in (("mnemonic", "mnemonic"),
+                                         ("description", "description"),
+                                         ("categoryName", "category"),
+                                         ("datatype", "datatype")):
+                            if info.hasElement(src):
+                                row[dst] = info.getElementAsString(src)
+                        if include_documentation and info.hasElement("documentation"):
+                            row["documentation"] = info.getElementAsString("documentation")
+                        if info.hasElement("overrides"):
+                            ovr = info.getElement("overrides")
+                            if ovr.isArray() and ovr.numValues() > 0:
+                                row["overrides"] = ";".join(
+                                    ovr.getValueAsString(j) for j in range(ovr.numValues())
+                                )
+                    results.append(row)
             return _csv(results)
         finally:
             session.stop()
