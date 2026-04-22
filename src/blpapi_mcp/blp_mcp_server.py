@@ -223,7 +223,8 @@ def serve(args: types.StartupArgs):
           BEST_EBIT            — consensus operating profit/EBIT (matches Terminal display)
           BEST_EBITDA          — consensus EBITDA
           BEST_NET_INCOME      — consensus net income
-          BEST_EV_TO_BEST_EBITDA — consensus EV/EBITDA multiple
+          BEST_EV_TO_BEST_EBITDA    — consensus EV/EBITDA multiple
+          BEST_CURRENT_EV_BEST_EBIT — consensus EV/EBIT multiple
 
         Historical actuals (comparable/adjusted):
           IS_COMP_EPS_ADJUSTED — comparable EPS (excludes one-time items)
