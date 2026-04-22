@@ -158,6 +158,26 @@ def _check_operation(svc, op_name: str) -> None:
         raise RuntimeError(f"{op_name} not available on service; available: {ops}")
 
 
+def _elem_str(parent, name: str) -> str | None:
+    """Read a sub-element as a string, tolerating array-typed sub-elements.
+    Returns None when the element is absent or an empty array; joins multi-value
+    arrays with ';'. Bloomberg's apiflds FieldInfo has array-typed sub-elements
+    (e.g. categoryName) where getElementAsString blows up with 'out of range
+    index 0' when the array is empty."""
+    if not parent.hasElement(name):
+        return None
+    elem = parent.getElement(name)
+    if elem.isArray():
+        n = elem.numValues()
+        if n == 0:
+            return None
+        return ";".join(elem.getValueAsString(i) for i in range(n))
+    try:
+        return elem.getValueAsString()
+    except Exception:
+        return None
+
+
 _READ_ONLY_HINTS = {
     "readOnlyHint": True,
     "destructiveHint": False,
@@ -1023,18 +1043,20 @@ def serve(args: types.StartupArgs):
                         break
                     fd = fd_array.getValueAsElement(i)
                     row: dict = {}
-                    if fd.hasElement("id"):
-                        row["field_id"] = fd.getElementAsString("id")
+                    row["field_id"] = _elem_str(fd, "id")
                     if fd.hasElement("fieldInfo"):
                         info = fd.getElement("fieldInfo")
                         for src, dst in (("mnemonic", "mnemonic"),
                                          ("description", "description"),
                                          ("categoryName", "category"),
                                          ("datatype", "datatype")):
-                            if info.hasElement(src):
-                                row[dst] = info.getElementAsString(src)
-                        if include_documentation and info.hasElement("documentation"):
-                            row["documentation"] = info.getElementAsString("documentation")
+                            v = _elem_str(info, src)
+                            if v is not None:
+                                row[dst] = v
+                        if include_documentation:
+                            doc = _elem_str(info, "documentation")
+                            if doc is not None:
+                                row["documentation"] = doc
                     results.append(row)
                 if len(results) >= max_results:
                     break
@@ -1085,32 +1107,31 @@ def serve(args: types.StartupArgs):
                 for i in range(fd_array.numValues()):
                     fd = fd_array.getValueAsElement(i)
                     row: dict = {}
-                    if fd.hasElement("id"):
-                        row["field_id"] = fd.getElementAsString("id")
+                    row["field_id"] = _elem_str(fd, "id")
                     if fd.hasElement("fieldError"):
                         err = fd.getElement("fieldError")
-                        if err.hasElement("message"):
-                            row["error"] = err.getElementAsString("message")
-                        elif err.hasElement("errorResponse") and err.getElement("errorResponse").hasElement("message"):
-                            row["error"] = err.getElement("errorResponse").getElementAsString("message")
-                        else:
-                            row["error"] = str(err)
+                        row["error"] = (
+                            _elem_str(err, "message")
+                            or (_elem_str(err.getElement("errorResponse"), "message")
+                                if err.hasElement("errorResponse") else None)
+                            or str(err)
+                        )
                     elif fd.hasElement("fieldInfo"):
                         info = fd.getElement("fieldInfo")
                         for src, dst in (("mnemonic", "mnemonic"),
                                          ("description", "description"),
                                          ("categoryName", "category"),
                                          ("datatype", "datatype")):
-                            if info.hasElement(src):
-                                row[dst] = info.getElementAsString(src)
-                        if include_documentation and info.hasElement("documentation"):
-                            row["documentation"] = info.getElementAsString("documentation")
-                        if info.hasElement("overrides"):
-                            ovr = info.getElement("overrides")
-                            if ovr.isArray() and ovr.numValues() > 0:
-                                row["overrides"] = ";".join(
-                                    ovr.getValueAsString(j) for j in range(ovr.numValues())
-                                )
+                            v = _elem_str(info, src)
+                            if v is not None:
+                                row[dst] = v
+                        if include_documentation:
+                            doc = _elem_str(info, "documentation")
+                            if doc is not None:
+                                row["documentation"] = doc
+                        ovr = _elem_str(info, "overrides")
+                        if ovr is not None:
+                            row["overrides"] = ovr
                     results.append(row)
             return _csv(results)
         finally:
