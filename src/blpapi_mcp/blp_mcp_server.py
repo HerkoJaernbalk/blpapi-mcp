@@ -82,19 +82,22 @@ def _to_value(elem):
         return None
 
 
-def _drain(session) -> list:
-    """Collect all response messages from the session queue."""
-    msgs = []
+def _response_messages(session):
+    """Yield response messages from the session queue as they arrive."""
     while True:
         ev = session.nextEvent(_TIMEOUT)
         etype = ev.eventType()
         if etype in (blpapi.Event.RESPONSE, blpapi.Event.PARTIAL_RESPONSE):
-            msgs.extend(list(ev))
+            yield from ev
         if etype == blpapi.Event.RESPONSE:
             break
         if etype == blpapi.Event.TIMEOUT:
             raise RuntimeError("Bloomberg request timed out after 10s")
-    return msgs
+
+
+def _drain(session) -> list:
+    """Collect all response messages from the session queue."""
+    return list(_response_messages(session))
 
 
 def _fmt_date(date_str: str) -> str:
@@ -113,9 +116,18 @@ def _csv(rows: list[dict]) -> str:
     """Serialize a list of dicts to CSV. Token-efficient format for LLMs."""
     if not rows:
         return ""
-    keys = list(dict.fromkeys(k for row in rows for k in row))
+    keys = []
+    seen = set()
+    nonempty = set()
+    for row in rows:
+        for k, v in row.items():
+            if k not in seen:
+                seen.add(k)
+                keys.append(k)
+            if v not in (None, ""):
+                nonempty.add(k)
     # Drop columns where every value is None or empty — Bloomberg often returns null placeholders
-    keys = [k for k in keys if any(row.get(k) not in (None, "") for row in rows)]
+    keys = [k for k in keys if k in nonempty]
     if not keys:
         return ""
     out = io.StringIO()
@@ -145,10 +157,58 @@ def _set_overrides(req, overrides: dict) -> None:
 
 
 def _bbg_error(err) -> str:
-    """Extract a human-readable message from a Bloomberg responseError element."""
+    """Extract a human-readable message from a Bloomberg error element."""
     code = err.getElementAsInteger("code") if err.hasElement("code") else "?"
     message = err.getElementAsString("message") if err.hasElement("message") else str(err)
     return f"error {code}: {message}"
+
+
+def _raise_response_error(msg, request_name: str) -> None:
+    """Raise when Bloomberg rejects the whole request."""
+    if msg.hasElement("responseError"):
+        raise RuntimeError(f"{request_name} {_bbg_error(msg.getElement('responseError'))}")
+
+
+def _security_error(sec) -> str | None:
+    """Return a per-security Bloomberg error, if present."""
+    if not sec.hasElement("securityError"):
+        return None
+    return _bbg_error(sec.getElement("securityError"))
+
+
+def _field_exception_errors(sec) -> dict[str, str]:
+    """Return Bloomberg field-level errors keyed by field mnemonic."""
+    if not sec.hasElement("fieldExceptions"):
+        return {}
+    errors: dict[str, str] = {}
+    exceptions = sec.getElement("fieldExceptions")
+    for i in range(exceptions.numValues()):
+        item = exceptions.getValueAsElement(i)
+        field = item.getElementAsString("fieldId") if item.hasElement("fieldId") else "?"
+        err = item.getElement("errorInfo") if item.hasElement("errorInfo") else item
+        errors[field] = _bbg_error(err)
+    return errors
+
+
+def _join_field_errors(errors: dict[str, str]) -> str:
+    return "; ".join(f"{field}: {error}" for field, error in errors.items())
+
+
+def _reference_row(sec, flds: list[str]) -> dict:
+    """Parse ReferenceDataRequest securityData, preserving partial errors."""
+    sec_error = _security_error(sec)
+    if sec_error:
+        return {"error": sec_error}
+
+    fd = sec.getElement("fieldData") if sec.hasElement("fieldData") else None
+    row = {
+        f: (_to_value(fd.getElement(f)) if fd is not None and fd.hasElement(f) else None)
+        for f in flds
+    }
+    field_errors = _field_exception_errors(sec)
+    if field_errors:
+        row["error"] = _join_field_errors(field_errors)
+    return row
 
 
 def _check_operation(svc, op_name: str) -> None:
@@ -272,16 +332,13 @@ def serve(args: types.StartupArgs):
                 _set_overrides(req, kwargs)
             session.sendRequest(req)
             result = {}
-            for msg in _drain(session):
+            for msg in _response_messages(session):
+                _raise_response_error(msg, "ReferenceDataRequest")
                 sec_data = msg.getElement("securityData")
                 for i in range(sec_data.numValues()):
                     sec = sec_data.getValueAsElement(i)
                     ticker = sec.getElementAsString("security")
-                    fd = sec.getElement("fieldData")
-                    result[ticker] = {
-                        f: (_to_value(fd.getElement(f)) if fd.hasElement(f) else None)
-                        for f in flds
-                    }
+                    result[ticker] = _reference_row(sec, flds)
             if len(result) == 1:
                 rows = [fields for fields in result.values()]
             else:
@@ -328,26 +385,33 @@ def serve(args: types.StartupArgs):
                 _set_overrides(req, kwargs)
             session.sendRequest(req)
             result = {}
-            for msg in _drain(session):
+            for msg in _response_messages(session):
+                _raise_response_error(msg, "ReferenceDataRequest")
                 sec_data = msg.getElement("securityData")
                 for i in range(sec_data.numValues()):
                     sec = sec_data.getValueAsElement(i)
                     ticker = sec.getElementAsString("security")
-                    fd = sec.getElement("fieldData")
-                    result[ticker] = {
-                        f: (_to_value(fd.getElement(f)) if fd.hasElement(f) else None)
-                        for f in flds
-                    }
+                    result[ticker] = _reference_row(sec, flds)
             rows = []
             multi_ticker = len(result) > 1
             multi_field = len(flds) > 1
             for ticker, fields in result.items():
-                for field, data in fields.items():
+                prefix: dict = {}
+                if multi_ticker:
+                    prefix["ticker"] = ticker
+                row_error = fields.get("error")
+                data_fields = [(field, data) for field, data in fields.items() if field != "error"]
+                if row_error and not any(data not in (None, []) for _, data in data_fields):
+                    rows.append({**prefix, "error": row_error})
+                    continue
+                for field, data in data_fields:
                     prefix: dict = {}
                     if multi_ticker:
                         prefix["ticker"] = ticker
                     if multi_field:
                         prefix["field"] = field
+                    if row_error:
+                        prefix["error"] = row_error
                     if isinstance(data, list):
                         for item in data:
                             if isinstance(item, dict):
@@ -403,9 +467,19 @@ def serve(args: types.StartupArgs):
                 _set_overrides(req, kwargs)
             session.sendRequest(req)
             result = {}
-            for msg in _drain(session):
+            for msg in _response_messages(session):
+                _raise_response_error(msg, "HistoricalDataRequest")
                 sec_data = msg.getElement("securityData")
                 ticker = sec_data.getElementAsString("security")
+                sec_error = _security_error(sec_data)
+                if sec_error:
+                    result[ticker] = [{"error": sec_error}]
+                    continue
+                field_errors = _field_exception_errors(sec_data)
+                error_text = _join_field_errors(field_errors) if field_errors else None
+                if not sec_data.hasElement("fieldData"):
+                    result[ticker] = [{"error": error_text or "missing fieldData"}]
+                    continue
                 fd_array = sec_data.getElement("fieldData")
                 rows = []
                 for i in range(fd_array.numValues()):
@@ -413,7 +487,11 @@ def serve(args: types.StartupArgs):
                     row = {"date": _to_value(row_elem.getElement("date"))}
                     for f in flds:
                         row[f] = _to_value(row_elem.getElement(f)) if row_elem.hasElement(f) else None
+                    if error_text:
+                        row["error"] = error_text
                     rows.append(row)
+                if error_text and not rows:
+                    rows.append({"error": error_text})
                 result[ticker] = rows
             if len(result) == 1:
                 all_rows = [row for rows in result.values() for row in rows]
@@ -457,7 +535,10 @@ def serve(args: types.StartupArgs):
                     req.set(k, v)
             blp_session.sendRequest(req)
             bars = []
-            for msg in _drain(blp_session):
+            for msg in _response_messages(blp_session):
+                _raise_response_error(msg, "IntradayBarRequest")
+                if not msg.hasElement("barData"):
+                    continue
                 bar_data = msg.getElement("barData").getElement("barTickData")
                 for i in range(bar_data.numValues()):
                     bar = bar_data.getValueAsElement(i)
@@ -513,9 +594,12 @@ def serve(args: types.StartupArgs):
             blp_session.sendRequest(req)
             ticks = []
             truncated = False
-            for msg in _drain(blp_session):
+            for msg in _response_messages(blp_session):
+                _raise_response_error(msg, "IntradayTickRequest")
                 if truncated:
                     break
+                if not msg.hasElement("tickData"):
+                    continue
                 tick_data = msg.getElement("tickData").getElement("tickData")
                 for i in range(tick_data.numValues()):
                     if len(ticks) >= max_rows:
@@ -575,18 +659,21 @@ def serve(args: types.StartupArgs):
                 _set_overrides(req, overrides)
             session.sendRequest(req)
             result = {}
-            for msg in _drain(session):
+            for msg in _response_messages(session):
+                _raise_response_error(msg, "ReferenceDataRequest")
                 sec_data = msg.getElement("securityData")
                 for i in range(sec_data.numValues()):
                     sec = sec_data.getValueAsElement(i)
                     t = sec.getElementAsString("security")
-                    fd = sec.getElement("fieldData")
-                    result[t] = _to_value(fd.getElement(fld)) if fd.hasElement(fld) else None
+                    row = _reference_row(sec, [fld])
+                    result[t] = row if row.get("error") and row.get(fld) is None else row.get(fld)
             rows = []
             multi_ticker = len(result) > 1
             for t, data in result.items():
                 prefix = {"ticker": t} if multi_ticker else {}
-                if isinstance(data, list):
+                if isinstance(data, dict) and "error" in data:
+                    rows.append({**prefix, "error": data["error"]})
+                elif isinstance(data, list):
                     for item in data:
                         if isinstance(item, dict):
                             rows.append({**prefix, **item})
@@ -631,18 +718,21 @@ def serve(args: types.StartupArgs):
                 _set_overrides(req, overrides)
             session.sendRequest(req)
             result = {}
-            for msg in _drain(session):
+            for msg in _response_messages(session):
+                _raise_response_error(msg, "ReferenceDataRequest")
                 sec_data = msg.getElement("securityData")
                 for i in range(sec_data.numValues()):
                     sec = sec_data.getValueAsElement(i)
                     ticker = sec.getElementAsString("security")
-                    fd = sec.getElement("fieldData")
-                    result[ticker] = _to_value(fd.getElement(fld)) if fd.hasElement(fld) else []
+                    row = _reference_row(sec, [fld])
+                    result[ticker] = row if row.get("error") and row.get(fld) in (None, []) else row.get(fld, [])
             rows = []
             multi_ticker = len(result) > 1
             for t, data in result.items():
                 prefix = {"ticker": t} if multi_ticker else {}
-                if isinstance(data, list):
+                if isinstance(data, dict) and "error" in data:
+                    rows.append({**prefix, "error": data["error"]})
+                elif isinstance(data, list):
                     for item in data:
                         if isinstance(item, dict):
                             rows.append({**prefix, **item})
@@ -687,9 +777,8 @@ def serve(args: types.StartupArgs):
                 _set_overrides(req, overrides)
             session.sendRequest(req)
             results = []
-            for msg in _drain(session):
-                if msg.hasElement("responseError"):
-                    raise RuntimeError(f"BeqsRequest {_bbg_error(msg.getElement('responseError'))}")
+            for msg in _response_messages(session):
+                _raise_response_error(msg, "BeqsRequest")
                 if msg.hasElement("data"):
                     sec_data = msg.getElement("data").getElement("securityData")
                     for i in range(sec_data.numValues()):
@@ -740,9 +829,19 @@ def serve(args: types.StartupArgs):
             req.set("periodicitySelection", "DAILY")
             session.sendRequest(req)
             result = {}
-            for msg in _drain(session):
+            for msg in _response_messages(session):
+                _raise_response_error(msg, "HistoricalDataRequest")
                 sec_data = msg.getElement("securityData")
                 ticker = sec_data.getElementAsString("security")
+                sec_error = _security_error(sec_data)
+                if sec_error:
+                    result[ticker] = [{"error": sec_error}]
+                    continue
+                field_errors = _field_exception_errors(sec_data)
+                error_text = _join_field_errors(field_errors) if field_errors else None
+                if not sec_data.hasElement("fieldData"):
+                    result[ticker] = [{"error": error_text or "missing fieldData"}]
+                    continue
                 fd_array = sec_data.getElement("fieldData")
                 rows = []
                 for i in range(fd_array.numValues()):
@@ -751,7 +850,12 @@ def serve(args: types.StartupArgs):
                     px = row_elem.getElementAsFloat("PX_LAST") if row_elem.hasElement("PX_LAST") else None
                     vol = row_elem.getElementAsFloat("PX_VOLUME") if row_elem.hasElement("PX_VOLUME") else None
                     tv = round((px * vol) / factor, 4) if px and vol else None
-                    rows.append({"date": date_val, "turnover": tv})
+                    row = {"date": date_val, "turnover": tv}
+                    if error_text:
+                        row["error"] = error_text
+                    rows.append(row)
+                if error_text and not rows:
+                    rows.append({"error": error_text})
                 result[ticker] = rows
             if len(result) == 1:
                 all_rows = [row for rows in result.values() for row in rows]
@@ -805,10 +909,8 @@ def serve(args: types.StartupArgs):
             session.sendRequest(req)
 
             tables: dict = {}
-            for msg in _drain(session):
-                if msg.hasElement("responseError"):
-                    err = msg.getElement("responseError")
-                    raise RuntimeError(str(err))
+            for msg in _response_messages(session):
+                _raise_response_error(msg, "BQL sendQuery")
                 if not msg.hasElement("results"):
                     continue
                 results = msg.getElement("results")
@@ -871,10 +973,9 @@ def serve(args: types.StartupArgs):
             req.set("maxResults", max_results)
             session.sendRequest(req)
             results = []
-            for msg in _drain(session):
-                if msg.hasElement("responseError"):
-                    raise RuntimeError(f"instrumentListRequest {_bbg_error(msg.getElement('responseError'))}")
-                elif msg.hasElement("results"):
+            for msg in _response_messages(session):
+                _raise_response_error(msg, "instrumentListRequest")
+                if msg.hasElement("results"):
                     res = msg.getElement("results")
                     for i in range(res.numValues()):
                         item = res.getValueAsElement(i)
@@ -918,10 +1019,9 @@ def serve(args: types.StartupArgs):
             req.set("maxResults", max_results)
             session.sendRequest(req)
             results = []
-            for msg in _drain(session):
-                if msg.hasElement("responseError"):
-                    raise RuntimeError(f"curveListRequest {_bbg_error(msg.getElement('responseError'))}")
-                elif msg.hasElement("results"):
+            for msg in _response_messages(session):
+                _raise_response_error(msg, "curveListRequest")
+                if msg.hasElement("results"):
                     res = msg.getElement("results")
                     for i in range(res.numValues()):
                         item = res.getValueAsElement(i)
@@ -966,10 +1066,9 @@ def serve(args: types.StartupArgs):
             req.set("maxResults", max_results)
             session.sendRequest(req)
             results = []
-            for msg in _drain(session):
-                if msg.hasElement("responseError"):
-                    raise RuntimeError(f"govtListRequest {_bbg_error(msg.getElement('responseError'))}")
-                elif msg.hasElement("results"):
+            for msg in _response_messages(session):
+                _raise_response_error(msg, "govtListRequest")
+                if msg.hasElement("results"):
                     res = msg.getElement("results")
                     for i in range(res.numValues()):
                         item = res.getValueAsElement(i)
@@ -1033,9 +1132,8 @@ def serve(args: types.StartupArgs):
             req.set("returnFieldDocumentation", bool(include_documentation))
             session.sendRequest(req)
             results: list[dict] = []
-            for msg in _drain(session):
-                if msg.hasElement("responseError"):
-                    raise RuntimeError(f"FieldSearchRequest {_bbg_error(msg.getElement('responseError'))}")
+            for msg in _response_messages(session):
+                _raise_response_error(msg, "FieldSearchRequest")
                 if not msg.hasElement("fieldData"):
                     continue
                 fd_array = msg.getElement("fieldData")
@@ -1099,9 +1197,8 @@ def serve(args: types.StartupArgs):
             req.set("returnFieldDocumentation", bool(include_documentation))
             session.sendRequest(req)
             results: list[dict] = []
-            for msg in _drain(session):
-                if msg.hasElement("responseError"):
-                    raise RuntimeError(f"FieldInfoRequest {_bbg_error(msg.getElement('responseError'))}")
+            for msg in _response_messages(session):
+                _raise_response_error(msg, "FieldInfoRequest")
                 if not msg.hasElement("fieldData"):
                     continue
                 fd_array = msg.getElement("fieldData")
