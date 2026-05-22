@@ -211,6 +211,46 @@ def _reference_row(sec, flds: list[str]) -> dict:
     return row
 
 
+def _historical_rows(sec_data, row_builder) -> list[dict]:
+    """Parse HistoricalDataRequest securityData into rows, preserving partial errors."""
+    sec_error = _security_error(sec_data)
+    if sec_error:
+        return [{"error": sec_error}]
+    field_errors = _field_exception_errors(sec_data)
+    error_text = _join_field_errors(field_errors) if field_errors else None
+    if not sec_data.hasElement("fieldData"):
+        return [{"error": error_text or "missing fieldData"}]
+    fd_array = sec_data.getElement("fieldData")
+    rows = []
+    for i in range(fd_array.numValues()):
+        row = row_builder(fd_array.getValueAsElement(i))
+        if error_text:
+            row["error"] = error_text
+        rows.append(row)
+    if error_text and not rows:
+        rows.append({"error": error_text})
+    return rows
+
+
+def _single_field_rows(result: dict) -> list[dict]:
+    """Flatten {ticker: data} into CSV rows; data is a list, a scalar, or {"error": ...}."""
+    rows = []
+    multi_ticker = len(result) > 1
+    for t, data in result.items():
+        prefix = {"ticker": t} if multi_ticker else {}
+        if isinstance(data, dict) and "error" in data:
+            rows.append({**prefix, "error": data["error"]})
+        elif isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    rows.append({**prefix, **item})
+                else:
+                    rows.append({**prefix, "value": item})
+        else:
+            rows.append({**prefix, "value": data})
+    return rows
+
+
 def _check_operation(svc, op_name: str) -> None:
     """Raise RuntimeError if op_name is not available on the Bloomberg service."""
     ops = [svc.getOperation(i).name() for i in range(svc.numOperations())]
@@ -396,18 +436,14 @@ def serve(args: types.StartupArgs):
             multi_ticker = len(result) > 1
             multi_field = len(flds) > 1
             for ticker, fields in result.items():
-                prefix: dict = {}
-                if multi_ticker:
-                    prefix["ticker"] = ticker
+                base: dict = {"ticker": ticker} if multi_ticker else {}
                 row_error = fields.get("error")
                 data_fields = [(field, data) for field, data in fields.items() if field != "error"]
                 if row_error and not any(data not in (None, []) for _, data in data_fields):
-                    rows.append({**prefix, "error": row_error})
+                    rows.append({**base, "error": row_error})
                     continue
                 for field, data in data_fields:
-                    prefix: dict = {}
-                    if multi_ticker:
-                        prefix["ticker"] = ticker
+                    prefix = dict(base)
                     if multi_field:
                         prefix["field"] = field
                     if row_error:
@@ -466,33 +502,19 @@ def serve(args: types.StartupArgs):
             if kwargs:
                 _set_overrides(req, kwargs)
             session.sendRequest(req)
+
+            def _row(row_elem):
+                row = {"date": _to_value(row_elem.getElement("date"))}
+                for f in flds:
+                    row[f] = _to_value(row_elem.getElement(f)) if row_elem.hasElement(f) else None
+                return row
+
             result = {}
             for msg in _response_messages(session):
                 _raise_response_error(msg, "HistoricalDataRequest")
                 sec_data = msg.getElement("securityData")
                 ticker = sec_data.getElementAsString("security")
-                sec_error = _security_error(sec_data)
-                if sec_error:
-                    result[ticker] = [{"error": sec_error}]
-                    continue
-                field_errors = _field_exception_errors(sec_data)
-                error_text = _join_field_errors(field_errors) if field_errors else None
-                if not sec_data.hasElement("fieldData"):
-                    result[ticker] = [{"error": error_text or "missing fieldData"}]
-                    continue
-                fd_array = sec_data.getElement("fieldData")
-                rows = []
-                for i in range(fd_array.numValues()):
-                    row_elem = fd_array.getValueAsElement(i)
-                    row = {"date": _to_value(row_elem.getElement("date"))}
-                    for f in flds:
-                        row[f] = _to_value(row_elem.getElement(f)) if row_elem.hasElement(f) else None
-                    if error_text:
-                        row["error"] = error_text
-                    rows.append(row)
-                if error_text and not rows:
-                    rows.append({"error": error_text})
-                result[ticker] = rows
+                result[ticker] = _historical_rows(sec_data, _row)
             if len(result) == 1:
                 all_rows = [row for rows in result.values() for row in rows]
             else:
@@ -667,21 +689,7 @@ def serve(args: types.StartupArgs):
                     t = sec.getElementAsString("security")
                     row = _reference_row(sec, [fld])
                     result[t] = row if row.get("error") and row.get(fld) is None else row.get(fld)
-            rows = []
-            multi_ticker = len(result) > 1
-            for t, data in result.items():
-                prefix = {"ticker": t} if multi_ticker else {}
-                if isinstance(data, dict) and "error" in data:
-                    rows.append({**prefix, "error": data["error"]})
-                elif isinstance(data, list):
-                    for item in data:
-                        if isinstance(item, dict):
-                            rows.append({**prefix, **item})
-                        else:
-                            rows.append({**prefix, "value": item})
-                else:
-                    rows.append({**prefix, "value": data})
-            return _csv(rows)
+            return _csv(_single_field_rows(result))
         finally:
             session.stop()
 
@@ -726,21 +734,7 @@ def serve(args: types.StartupArgs):
                     ticker = sec.getElementAsString("security")
                     row = _reference_row(sec, [fld])
                     result[ticker] = row if row.get("error") and row.get(fld) in (None, []) else row.get(fld, [])
-            rows = []
-            multi_ticker = len(result) > 1
-            for t, data in result.items():
-                prefix = {"ticker": t} if multi_ticker else {}
-                if isinstance(data, dict) and "error" in data:
-                    rows.append({**prefix, "error": data["error"]})
-                elif isinstance(data, list):
-                    for item in data:
-                        if isinstance(item, dict):
-                            rows.append({**prefix, **item})
-                        else:
-                            rows.append({**prefix, "value": item})
-                else:
-                    rows.append({**prefix, "value": data})
-            return _csv(rows)
+            return _csv(_single_field_rows(result))
         finally:
             session.stop()
 
@@ -828,35 +822,20 @@ def serve(args: types.StartupArgs):
             req.set("endDate", _fmt_date(end_date or "today"))
             req.set("periodicitySelection", "DAILY")
             session.sendRequest(req)
+
+            def _row(row_elem):
+                date_val = _to_value(row_elem.getElement("date"))
+                px = row_elem.getElementAsFloat("PX_LAST") if row_elem.hasElement("PX_LAST") else None
+                vol = row_elem.getElementAsFloat("PX_VOLUME") if row_elem.hasElement("PX_VOLUME") else None
+                tv = round((px * vol) / factor, 4) if px is not None and vol is not None else None
+                return {"date": date_val, "turnover": tv}
+
             result = {}
             for msg in _response_messages(session):
                 _raise_response_error(msg, "HistoricalDataRequest")
                 sec_data = msg.getElement("securityData")
                 ticker = sec_data.getElementAsString("security")
-                sec_error = _security_error(sec_data)
-                if sec_error:
-                    result[ticker] = [{"error": sec_error}]
-                    continue
-                field_errors = _field_exception_errors(sec_data)
-                error_text = _join_field_errors(field_errors) if field_errors else None
-                if not sec_data.hasElement("fieldData"):
-                    result[ticker] = [{"error": error_text or "missing fieldData"}]
-                    continue
-                fd_array = sec_data.getElement("fieldData")
-                rows = []
-                for i in range(fd_array.numValues()):
-                    row_elem = fd_array.getValueAsElement(i)
-                    date_val = _to_value(row_elem.getElement("date"))
-                    px = row_elem.getElementAsFloat("PX_LAST") if row_elem.hasElement("PX_LAST") else None
-                    vol = row_elem.getElementAsFloat("PX_VOLUME") if row_elem.hasElement("PX_VOLUME") else None
-                    tv = round((px * vol) / factor, 4) if px and vol else None
-                    row = {"date": date_val, "turnover": tv}
-                    if error_text:
-                        row["error"] = error_text
-                    rows.append(row)
-                if error_text and not rows:
-                    rows.append({"error": error_text})
-                result[ticker] = rows
+                result[ticker] = _historical_rows(sec_data, _row)
             if len(result) == 1:
                 all_rows = [row for rows in result.values() for row in rows]
             else:
