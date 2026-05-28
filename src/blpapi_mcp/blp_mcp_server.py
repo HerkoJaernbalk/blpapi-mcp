@@ -1,7 +1,6 @@
 
 import csv
 import io
-import json
 import datetime as dt
 import socket
 
@@ -54,6 +53,13 @@ def _make_session() -> blpapi.Session:
     return session
 
 
+def _open_service(session, name: str):
+    """Open a Bloomberg service and return it, raising on failure."""
+    if not session.openService(name):
+        raise RuntimeError(f"Failed to open {name}")
+    return session.getService(name)
+
+
 def _to_value(elem):
     """Recursively convert a blpapi Element to a native Python value."""
     if elem.isArray():
@@ -92,7 +98,7 @@ def _response_messages(session):
         if etype == blpapi.Event.RESPONSE:
             break
         if etype == blpapi.Event.TIMEOUT:
-            raise RuntimeError("Bloomberg request timed out after 10s")
+            raise RuntimeError(f"Bloomberg request timed out after {_TIMEOUT // 1000}s")
 
 
 def _drain(session) -> list:
@@ -156,6 +162,18 @@ def _set_overrides(req, overrides: dict) -> None:
         o.setElement("value", str(v))
 
 
+def _reference_request(svc, securities: list[str], fields: list[str], overrides: dict | None = None):
+    """Build a ReferenceDataRequest from securities, fields, and optional overrides."""
+    req = svc.createRequest("ReferenceDataRequest")
+    for s in securities:
+        req.append("securities", s)
+    for f in fields:
+        req.append("fields", f)
+    if overrides:
+        _set_overrides(req, overrides)
+    return req
+
+
 def _bbg_error(err) -> str:
     """Extract a human-readable message from a Bloomberg error element."""
     code = err.getElementAsInteger("code") if err.hasElement("code") else "?"
@@ -167,6 +185,15 @@ def _raise_response_error(msg, request_name: str) -> None:
     """Raise when Bloomberg rejects the whole request."""
     if msg.hasElement("responseError"):
         raise RuntimeError(f"{request_name} {_bbg_error(msg.getElement('responseError'))}")
+
+
+def _unexpected_response(msg, request_name: str) -> None:
+    """Raise on a response of unexpected shape, so failures aren't silent."""
+    elements = [str(msg.getElement(i).name()) for i in range(msg.numElements())]
+    raise RuntimeError(
+        f"Unexpected {request_name} response (type={msg.messageType()}, "
+        f"elements={elements}): {msg.toString()[:400]}"
+    )
 
 
 def _security_error(sec) -> str | None:
@@ -251,11 +278,60 @@ def _single_field_rows(result: dict) -> list[dict]:
     return rows
 
 
+def _collect_reference_rows(session, flds: list[str]) -> dict:
+    """Send-and-collect ReferenceDataRequest responses keyed by security ticker."""
+    result: dict = {}
+    for msg in _response_messages(session):
+        _raise_response_error(msg, "ReferenceDataRequest")
+        sec_data = msg.getElement("securityData")
+        for i in range(sec_data.numValues()):
+            sec = sec_data.getValueAsElement(i)
+            result[sec.getElementAsString("security")] = _reference_row(sec, flds)
+    return result
+
+
+def _collect_historical_rows(session, row_builder) -> dict:
+    """Send-and-collect HistoricalDataRequest responses keyed by security ticker."""
+    result: dict = {}
+    for msg in _response_messages(session):
+        _raise_response_error(msg, "HistoricalDataRequest")
+        sec_data = msg.getElement("securityData")
+        ticker = sec_data.getElementAsString("security")
+        result[ticker] = _historical_rows(sec_data, row_builder)
+    return result
+
+
+def _flatten_by_ticker(result: dict) -> list[dict]:
+    """Flatten {ticker: [rows]} into one list; prefix 'ticker' only when multiple."""
+    if len(result) == 1:
+        return [row for rows in result.values() for row in rows]
+    return [{"ticker": t, **row} for t, rows in result.items() for row in rows]
+
+
 def _check_operation(svc, op_name: str) -> None:
     """Raise RuntimeError if op_name is not available on the Bloomberg service."""
     ops = [svc.getOperation(i).name() for i in range(svc.numOperations())]
     if op_name not in ops:
         raise RuntimeError(f"{op_name} not available on service; available: {ops}")
+
+
+def _str_fields(item, fields: tuple[str, ...]) -> dict:
+    """Read the given sub-elements as strings, skipping any that are absent."""
+    return {f: item.getElementAsString(f) for f in fields if item.hasElement(f)}
+
+
+def _collect_list_results(session, request_name: str, extract_row) -> list[dict]:
+    """Send-and-collect a //blp/instruments list request, parsing each 'results' item."""
+    results: list[dict] = []
+    for msg in _response_messages(session):
+        _raise_response_error(msg, request_name)
+        if msg.hasElement("results"):
+            res = msg.getElement("results")
+            for i in range(res.numValues()):
+                results.append(extract_row(res.getValueAsElement(i)))
+        else:
+            _unexpected_response(msg, request_name)
+    return results
 
 
 def _elem_str(parent, name: str) -> str | None:
@@ -360,27 +436,12 @@ def serve(args: types.StartupArgs):
     async def bdp(tickers: list[str], flds: list[str], kwargs: dict[str, object] | None = None) -> str:
         session = _make_session()
         try:
-            if not session.openService(_REFDATA):
-                raise RuntimeError(f"Failed to open {_REFDATA}")
-            svc = session.getService(_REFDATA)
-            req = svc.createRequest("ReferenceDataRequest")
-            for t in tickers:
-                req.append("securities", t)
-            for f in flds:
-                req.append("fields", f)
-            if kwargs:
-                _set_overrides(req, kwargs)
+            svc = _open_service(session, _REFDATA)
+            req = _reference_request(svc, tickers, flds, kwargs)
             session.sendRequest(req)
-            result = {}
-            for msg in _response_messages(session):
-                _raise_response_error(msg, "ReferenceDataRequest")
-                sec_data = msg.getElement("securityData")
-                for i in range(sec_data.numValues()):
-                    sec = sec_data.getValueAsElement(i)
-                    ticker = sec.getElementAsString("security")
-                    result[ticker] = _reference_row(sec, flds)
+            result = _collect_reference_rows(session, flds)
             if len(result) == 1:
-                rows = [fields for fields in result.values()]
+                rows = list(result.values())
             else:
                 rows = [{"ticker": t, **fields} for t, fields in result.items()]
             return _csv(rows)
@@ -413,25 +474,10 @@ def serve(args: types.StartupArgs):
     async def bds(tickers: list[str], flds: list[str], kwargs: dict[str, object] | None = None) -> str:
         session = _make_session()
         try:
-            if not session.openService(_REFDATA):
-                raise RuntimeError(f"Failed to open {_REFDATA}")
-            svc = session.getService(_REFDATA)
-            req = svc.createRequest("ReferenceDataRequest")
-            for t in tickers:
-                req.append("securities", t)
-            for f in flds:
-                req.append("fields", f)
-            if kwargs:
-                _set_overrides(req, kwargs)
+            svc = _open_service(session, _REFDATA)
+            req = _reference_request(svc, tickers, flds, kwargs)
             session.sendRequest(req)
-            result = {}
-            for msg in _response_messages(session):
-                _raise_response_error(msg, "ReferenceDataRequest")
-                sec_data = msg.getElement("securityData")
-                for i in range(sec_data.numValues()):
-                    sec = sec_data.getValueAsElement(i)
-                    ticker = sec.getElementAsString("security")
-                    result[ticker] = _reference_row(sec, flds)
+            result = _collect_reference_rows(session, flds)
             rows = []
             multi_ticker = len(result) > 1
             multi_field = len(flds) > 1
@@ -482,9 +528,7 @@ def serve(args: types.StartupArgs):
     async def bdh(tickers: list[str], flds: list[str], start_date: str | None = None, end_date: str = "today", periodicity: str = "DAILY", adjust: str | None = None, kwargs: dict[str, object] | None = None) -> str:
         session = _make_session()
         try:
-            if not session.openService(_REFDATA):
-                raise RuntimeError(f"Failed to open {_REFDATA}")
-            svc = session.getService(_REFDATA)
+            svc = _open_service(session, _REFDATA)
             req = svc.createRequest("HistoricalDataRequest")
             for t in tickers:
                 req.append("securities", t)
@@ -509,17 +553,8 @@ def serve(args: types.StartupArgs):
                     row[f] = _to_value(row_elem.getElement(f)) if row_elem.hasElement(f) else None
                 return row
 
-            result = {}
-            for msg in _response_messages(session):
-                _raise_response_error(msg, "HistoricalDataRequest")
-                sec_data = msg.getElement("securityData")
-                ticker = sec_data.getElementAsString("security")
-                result[ticker] = _historical_rows(sec_data, _row)
-            if len(result) == 1:
-                all_rows = [row for rows in result.values() for row in rows]
-            else:
-                all_rows = [{"ticker": ticker, **row} for ticker, rows in result.items() for row in rows]
-            return _csv(all_rows)
+            result = _collect_historical_rows(session, _row)
+            return _csv(_flatten_by_ticker(result))
         finally:
             session.stop()
 
@@ -542,9 +577,7 @@ def serve(args: types.StartupArgs):
     async def bdib(ticker: str, date: str, session: str = "allday", typ: str = "TRADE", interval: int = 1, kwargs: dict[str, object] | None = None) -> str:
         blp_session = _make_session()
         try:
-            if not blp_session.openService(_REFDATA):
-                raise RuntimeError(f"Failed to open {_REFDATA}")
-            svc = blp_session.getService(_REFDATA)
+            svc = _open_service(blp_session, _REFDATA)
             req = svc.createRequest("IntradayBarRequest")
             req.set("security", ticker)
             req.set("eventType", typ)
@@ -597,9 +630,7 @@ def serve(args: types.StartupArgs):
     async def bdtick(ticker: str, date: str, session: str = "allday", time_range: tuple[str, ...] | None = None, event_types: list[str] | None = None, max_rows: int = 5000, kwargs: dict[str, object] | None = None) -> str:
         blp_session = _make_session()
         try:
-            if not blp_session.openService(_REFDATA):
-                raise RuntimeError(f"Failed to open {_REFDATA}")
-            svc = blp_session.getService(_REFDATA)
+            svc = _open_service(blp_session, _REFDATA)
             req = svc.createRequest("IntradayTickRequest")
             req.set("security", ticker)
             for etype in (event_types or ["TRADE"]):
@@ -649,7 +680,7 @@ def serve(args: types.StartupArgs):
 
         Ticker format: same as bdp (e.g. 'AAPL US Equity')
         by: 'Geo' (geographic breakdown) or 'Products' (business segment breakdown)
-        typ: 'Revenue' (default), 'Operating_Income', 'Assets', 'Employees'
+        typ: 'Revenue' (default) or 'Operating_Income'
         ccy: currency to report in (e.g. 'USD', 'EUR') — defaults to reporting currency
 
         Example uses:
@@ -665,30 +696,25 @@ def serve(args: types.StartupArgs):
             ("Products", "Revenue"):          "PRODUCT_SEGMENT_SALES_PCTS",
             ("Products", "Operating_Income"): "PRODUCT_SEGMENT_OP_INC_PCTS",
         }
-        fld = field_map.get((by, typ), "GEO_SEGMENT_SALES_PCTS")
+        fld = field_map.get((by, typ))
+        if fld is None:
+            raise ValueError(
+                f"Unsupported by/typ combination ({by!r}, {typ!r}). "
+                f"Valid combinations: {sorted(field_map)}"
+            )
         overrides = dict(kwargs) if kwargs else {}
         if ccy:
             overrides["EQY_FUND_CRNCY"] = ccy
         session = _make_session()
         try:
-            if not session.openService(_REFDATA):
-                raise RuntimeError(f"Failed to open {_REFDATA}")
-            svc = session.getService(_REFDATA)
-            req = svc.createRequest("ReferenceDataRequest")
-            req.append("securities", ticker)
-            req.append("fields", fld)
-            if overrides:
-                _set_overrides(req, overrides)
+            svc = _open_service(session, _REFDATA)
+            req = _reference_request(svc, [ticker], [fld], overrides)
             session.sendRequest(req)
-            result = {}
-            for msg in _response_messages(session):
-                _raise_response_error(msg, "ReferenceDataRequest")
-                sec_data = msg.getElement("securityData")
-                for i in range(sec_data.numValues()):
-                    sec = sec_data.getValueAsElement(i)
-                    t = sec.getElementAsString("security")
-                    row = _reference_row(sec, [fld])
-                    result[t] = row if row.get("error") and row.get(fld) is None else row.get(fld)
+            raw = _collect_reference_rows(session, [fld])
+            result = {
+                t: (row if row.get("error") and row.get(fld) is None else row.get(fld))
+                for t, row in raw.items()
+            }
             return _csv(_single_field_rows(result))
         finally:
             session.stop()
@@ -715,25 +741,14 @@ def serve(args: types.StartupArgs):
             overrides["DVD_END_DT"] = _fmt_date(end_date)
         session = _make_session()
         try:
-            if not session.openService(_REFDATA):
-                raise RuntimeError(f"Failed to open {_REFDATA}")
-            svc = session.getService(_REFDATA)
-            req = svc.createRequest("ReferenceDataRequest")
-            for t in tickers:
-                req.append("securities", t)
-            req.append("fields", fld)
-            if overrides:
-                _set_overrides(req, overrides)
+            svc = _open_service(session, _REFDATA)
+            req = _reference_request(svc, tickers, [fld], overrides)
             session.sendRequest(req)
-            result = {}
-            for msg in _response_messages(session):
-                _raise_response_error(msg, "ReferenceDataRequest")
-                sec_data = msg.getElement("securityData")
-                for i in range(sec_data.numValues()):
-                    sec = sec_data.getValueAsElement(i)
-                    ticker = sec.getElementAsString("security")
-                    row = _reference_row(sec, [fld])
-                    result[ticker] = row if row.get("error") and row.get(fld) in (None, []) else row.get(fld, [])
+            raw = _collect_reference_rows(session, [fld])
+            result = {
+                t: (row if row.get("error") and row.get(fld) in (None, []) else row.get(fld, []))
+                for t, row in raw.items()
+            }
             return _csv(_single_field_rows(result))
         finally:
             session.stop()
@@ -755,9 +770,7 @@ def serve(args: types.StartupArgs):
     async def beqs(screen: str, asof: str | None = None, typ: str = "PRIVATE", group: str = "General", kwargs: dict[str, object] | None = None) -> str:
         session = _make_session()
         try:
-            if not session.openService(_REFDATA):
-                raise RuntimeError(f"Failed to open {_REFDATA}")
-            svc = session.getService(_REFDATA)
+            svc = _open_service(session, _REFDATA)
             req = svc.createRequest("BeqsRequest")
             req.set("screenName", screen)
             req.set("screenType", typ)
@@ -779,12 +792,7 @@ def serve(args: types.StartupArgs):
                         sec = sec_data.getValueAsElement(i)
                         results.append({"security": sec.getElementAsString("security")})
                 else:
-                    # Unexpected message shape — surface it so failures aren't silent
-                    elements = [str(msg.getElement(i).name()) for i in range(msg.numElements())]
-                    raise RuntimeError(
-                        f"Unexpected BeqsRequest response (type={msg.messageType()}, "
-                        f"elements={elements}): {msg.toString()[:400]}"
-                    )
+                    _unexpected_response(msg, "BeqsRequest")
             return _csv(results)
         finally:
             session.stop()
@@ -809,9 +817,7 @@ def serve(args: types.StartupArgs):
     async def turnover(tickers: list[str], start_date: str | None = None, end_date: str | None = None, ccy: str = "USD", factor: float = 1e6) -> str:
         session = _make_session()
         try:
-            if not session.openService(_REFDATA):
-                raise RuntimeError(f"Failed to open {_REFDATA}")
-            svc = session.getService(_REFDATA)
+            svc = _open_service(session, _REFDATA)
             req = svc.createRequest("HistoricalDataRequest")
             for t in tickers:
                 req.append("securities", t)
@@ -830,17 +836,8 @@ def serve(args: types.StartupArgs):
                 tv = round((px * vol) / factor, 4) if px is not None and vol is not None else None
                 return {"date": date_val, "turnover": tv}
 
-            result = {}
-            for msg in _response_messages(session):
-                _raise_response_error(msg, "HistoricalDataRequest")
-                sec_data = msg.getElement("securityData")
-                ticker = sec_data.getElementAsString("security")
-                result[ticker] = _historical_rows(sec_data, _row)
-            if len(result) == 1:
-                all_rows = [row for rows in result.values() for row in rows]
-            else:
-                all_rows = [{"ticker": ticker, **row} for ticker, rows in result.items() for row in rows]
-            return _csv(all_rows)
+            result = _collect_historical_rows(session, _row)
+            return _csv(_flatten_by_ticker(result))
         finally:
             session.stop()
 
@@ -939,9 +936,7 @@ def serve(args: types.StartupArgs):
     async def instruments(query: str, typ: str = "Corp", max_results: int = 20) -> str:
         session = _make_session()
         try:
-            if not session.openService(_INSTRUMENTS):
-                raise RuntimeError(f"Failed to open {_INSTRUMENTS}")
-            svc = session.getService(_INSTRUMENTS)
+            svc = _open_service(session, _INSTRUMENTS)
             _check_operation(svc, "instrumentListRequest")
             yk = _YK_FILTER.get(typ)
             if yk is None:
@@ -951,25 +946,10 @@ def serve(args: types.StartupArgs):
             req.set("yellowKeyFilter", yk)
             req.set("maxResults", max_results)
             session.sendRequest(req)
-            results = []
-            for msg in _response_messages(session):
-                _raise_response_error(msg, "instrumentListRequest")
-                if msg.hasElement("results"):
-                    res = msg.getElement("results")
-                    for i in range(res.numValues()):
-                        item = res.getValueAsElement(i)
-                        row = {}
-                        if item.hasElement("security"):
-                            row["security"] = item.getElementAsString("security")
-                        if item.hasElement("description"):
-                            row["description"] = item.getElementAsString("description")
-                        results.append(row)
-                else:
-                    elements = [str(msg.getElement(i).name()) for i in range(msg.numElements())]
-                    raise RuntimeError(
-                        f"Unexpected instrumentListRequest response (type={msg.messageType()}, "
-                        f"elements={elements}): {msg.toString()[:400]}"
-                    )
+            results = _collect_list_results(
+                session, "instrumentListRequest",
+                lambda item: _str_fields(item, ("security", "description")),
+            )
             return _csv(results)
         finally:
             session.stop()
@@ -989,34 +969,18 @@ def serve(args: types.StartupArgs):
     async def curve_list(query: str, max_results: int = 20) -> str:
         session = _make_session()
         try:
-            if not session.openService(_INSTRUMENTS):
-                raise RuntimeError(f"Failed to open {_INSTRUMENTS}")
-            svc = session.getService(_INSTRUMENTS)
+            svc = _open_service(session, _INSTRUMENTS)
             _check_operation(svc, "curveListRequest")
             req = svc.createRequest("curveListRequest")
             req.set("query", query)
             req.set("maxResults", max_results)
             session.sendRequest(req)
-            results = []
-            for msg in _response_messages(session):
-                _raise_response_error(msg, "curveListRequest")
-                if msg.hasElement("results"):
-                    res = msg.getElement("results")
-                    for i in range(res.numValues()):
-                        item = res.getValueAsElement(i)
-                        row = {
-                            f: item.getElementAsString(f)
-                            for f in ("description", "country", "currency", "curveid",
-                                      "type", "subtype", "publisher", "bbgid")
-                            if item.hasElement(f)
-                        }
-                        results.append(row)
-                else:
-                    elements = [str(msg.getElement(i).name()) for i in range(msg.numElements())]
-                    raise RuntimeError(
-                        f"Unexpected curveListRequest response (type={msg.messageType()}, "
-                        f"elements={elements}): {msg.toString()[:400]}"
-                    )
+            curve_fields = ("description", "country", "currency", "curveid",
+                            "type", "subtype", "publisher", "bbgid")
+            results = _collect_list_results(
+                session, "curveListRequest",
+                lambda item: _str_fields(item, curve_fields),
+            )
             return _csv(results)
         finally:
             session.stop()
@@ -1036,32 +1000,16 @@ def serve(args: types.StartupArgs):
     async def govt_list(query: str, max_results: int = 20) -> str:
         session = _make_session()
         try:
-            if not session.openService(_INSTRUMENTS):
-                raise RuntimeError(f"Failed to open {_INSTRUMENTS}")
-            svc = session.getService(_INSTRUMENTS)
+            svc = _open_service(session, _INSTRUMENTS)
             _check_operation(svc, "govtListRequest")
             req = svc.createRequest("govtListRequest")
             req.set("query", query)
             req.set("maxResults", max_results)
             session.sendRequest(req)
-            results = []
-            for msg in _response_messages(session):
-                _raise_response_error(msg, "govtListRequest")
-                if msg.hasElement("results"):
-                    res = msg.getElement("results")
-                    for i in range(res.numValues()):
-                        item = res.getValueAsElement(i)
-                        row = {}
-                        for f in ("parseky", "name", "ticker"):
-                            if item.hasElement(f):
-                                row[f] = item.getElementAsString(f)
-                        results.append(row)
-                else:
-                    elements = [str(msg.getElement(i).name()) for i in range(msg.numElements())]
-                    raise RuntimeError(
-                        f"Unexpected govtListRequest response (type={msg.messageType()}, "
-                        f"elements={elements}): {msg.toString()[:400]}"
-                    )
+            results = _collect_list_results(
+                session, "govtListRequest",
+                lambda item: _str_fields(item, ("parseky", "name", "ticker")),
+            )
             return _csv(results)
         finally:
             session.stop()
@@ -1099,9 +1047,7 @@ def serve(args: types.StartupArgs):
             raise ValueError(f"Unknown field_type {field_type!r}. Valid: Any, Static, RealTime")
         session = _make_session()
         try:
-            if not session.openService(_APIFLDS):
-                raise RuntimeError(f"Failed to open {_APIFLDS}")
-            svc = session.getService(_APIFLDS)
+            svc = _open_service(session, _APIFLDS)
             req = svc.createRequest("FieldSearchRequest")
             req.set("searchSpec", query)
             if field_type == "Static":
@@ -1167,9 +1113,7 @@ def serve(args: types.StartupArgs):
             raise ValueError("mnemonics must not be empty")
         session = _make_session()
         try:
-            if not session.openService(_APIFLDS):
-                raise RuntimeError(f"Failed to open {_APIFLDS}")
-            svc = session.getService(_APIFLDS)
+            svc = _open_service(session, _APIFLDS)
             req = svc.createRequest("FieldInfoRequest")
             for m in mnemonics:
                 req.append("id", m)
