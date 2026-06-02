@@ -1,7 +1,6 @@
 
 import json
 import enum
-import typing
 
 
 class Transport(enum.Enum):
@@ -24,5 +23,3 @@ class StartupArgs:
       "host": self.host,
       "port": self.port,
     })
-
-BloombergKWArgs = dict[str, typing.Any] | None
