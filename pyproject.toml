@@ -1,11 +1,12 @@
 [project]
 name = "blpapi-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "A MCP server providing financial data from Bloomberg blpapi"
 readme = "README.md"
 authors = [
-    { name = "Samuel Seng", email = "djsamseng@gmail.com" }
+    { name = "Henrik Jernbeck", email = "henrik.jernbeck@gmail.com" }
 ]
+# Original author: Samuel Seng <djsamseng@gmail.com>
 requires-python = ">=3.10, <3.13"
 dependencies = [
     "blpapi>=3.25.3",
