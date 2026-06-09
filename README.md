@@ -85,6 +85,13 @@ To update to the latest version:
 uv tool install --force "git+https://github.com/HerkoJaernbalk/blpapi-mcp" --extra-index-url https://blpapi.bloomberg.com/repository/releases/python/simple/
 ```
 
+## Configuration
+
+The server connects to the Bloomberg Terminal API at `localhost:8194` by default. To point it elsewhere (e.g. a Server API box), set environment variables:
+
+- `BLPAPI_HOST` — Bloomberg API host (default `localhost`)
+- `BLPAPI_PORT` — Bloomberg API port (default `8194`)
+
 ## Troubleshooting
 
 - **Bloomberg not showing in Claude** — make sure Bloomberg Terminal is open and logged in before starting Claude Desktop

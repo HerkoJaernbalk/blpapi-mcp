@@ -74,7 +74,7 @@ async def options_screen(
                 code = err.getElementAsInteger("code") if err.hasElement("code") else "?"
                 message = err.getElementAsString("message") if err.hasElement("message") else str(err)
                 raise RuntimeError(f"OptionsScreenRequest error {code}: {message}")
-            elif msg.hasElement("data"):
+            if msg.hasElement("data"):
                 data = msg.getElement("data")
                 for i in range(data.numValues()):
                     row_elem = data.getValueAsElement(i)

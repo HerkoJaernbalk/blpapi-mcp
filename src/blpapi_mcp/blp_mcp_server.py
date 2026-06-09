@@ -1,11 +1,11 @@
-
 import csv
-import io
 import datetime as dt
+import io
+import math
+import os
 import socket
 
 import blpapi
-import blpapi.version
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.utilities.logging import get_logger
 
@@ -44,12 +44,16 @@ _SESSION_TIMES = {
 
 
 def _make_session() -> blpapi.Session:
+    host = os.environ.get("BLPAPI_HOST", "localhost")
+    port = int(os.environ.get("BLPAPI_PORT", "8194"))
     opts = blpapi.SessionOptions()
-    opts.setServerHost("localhost")
-    opts.setServerPort(8194)
+    opts.setServerHost(host)
+    opts.setServerPort(port)
     session = blpapi.Session(opts)
     if not session.start():
-        raise RuntimeError("Could not connect to Bloomberg Terminal (is BBComm running?)")
+        raise RuntimeError(
+            f"Could not connect to Bloomberg Terminal at {host}:{port} (is BBComm running?)"
+        )
     return session
 
 
@@ -76,7 +80,7 @@ def _to_value(elem):
         return elem.getValueAsInteger()
     if dtype in (blpapi.DataType.FLOAT32, blpapi.DataType.FLOAT64):
         v = elem.getValueAsFloat()
-        return None if v != v else v  # NaN -> None
+        return None if math.isnan(v) else v
     if dtype == blpapi.DataType.DATE:
         d = elem.getValueAsDatetime()
         return f"{d.year:04d}-{d.month:02d}-{d.day:02d}"
@@ -106,6 +110,14 @@ def _drain(session) -> list:
     return list(_response_messages(session))
 
 
+def _session_window(session: str) -> tuple[str, str]:
+    """Return the (start, end) time window for a named trading session."""
+    window = _SESSION_TIMES.get(session)
+    if window is None:
+        raise ValueError(f"Unknown session {session!r}. Valid values: {list(_SESSION_TIMES)}")
+    return window
+
+
 def _fmt_date(date_str: str) -> str:
     """Convert YYYY-MM-DD to YYYYMMDD for Bloomberg historical requests."""
     if date_str == "today":
@@ -113,9 +125,9 @@ def _fmt_date(date_str: str) -> str:
     return date_str.replace("-", "")
 
 
-def _parse_datetime(date_str: str, time_str: str) -> blpapi.datetime:
-    d = dt.datetime.strptime(f"{date_str}T{time_str}", "%Y-%m-%dT%H:%M:%S")
-    return blpapi.datetime(d.year, d.month, d.day, d.hour, d.minute, d.second)
+def _parse_datetime(date_str: str, time_str: str) -> dt.datetime:
+    """Parse 'YYYY-MM-DD' + 'HH:MM:SS' into a datetime accepted by blpapi Request.set."""
+    return dt.datetime.strptime(f"{date_str}T{time_str}", "%Y-%m-%dT%H:%M:%S")
 
 
 def _csv(rows: list[dict]) -> str:
@@ -327,8 +339,7 @@ def _collect_list_results(session, request_name: str, extract_row) -> list[dict]
         _raise_response_error(msg, request_name)
         if msg.hasElement("results"):
             res = msg.getElement("results")
-            for i in range(res.numValues()):
-                results.append(extract_row(res.getValueAsElement(i)))
+            results.extend(extract_row(res.getValueAsElement(i)) for i in range(res.numValues()))
         else:
             _unexpected_response(msg, request_name)
     return results
@@ -354,6 +365,17 @@ def _elem_str(parent, name: str) -> str | None:
         return None
 
 
+def _lan_ip() -> str | None:
+    """Best-effort LAN IP for the startup banner; None when no network is available.
+    No packet is sent — connecting a UDP socket only selects the outbound interface."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+    except OSError:
+        return None
+
+
 _READ_ONLY_HINTS = {
     "readOnlyHint": True,
     "destructiveHint": False,
@@ -365,8 +387,8 @@ _READ_ONLY_HINTS = {
 def serve(args: types.StartupArgs):
     mcp = FastMCP("blpapi_mcp", host=args.host, port=args.port)
     logger = get_logger(__name__)
-    logger.info("startup args:" + str(args))
-    logger.info("blpapi version:" + blpapi.version())  # type: ignore
+    logger.info("startup args: %s", args)
+    logger.info("blpapi version: %s", blpapi.version())
 
     @mcp.tool(
         name="bdp",
@@ -538,6 +560,8 @@ def serve(args: types.StartupArgs):
                 req.set("startDate", _fmt_date(start_date))
             req.set("endDate", _fmt_date(end_date))
             req.set("periodicitySelection", periodicity)
+            if adjust is not None and adjust not in ("all", "dvd", "split"):
+                raise ValueError(f"Unknown adjust {adjust!r}. Valid values: all, dvd, split")
             if adjust in ("all", "dvd"):
                 req.set("adjustmentNormal", True)
                 req.set("adjustmentAbnormal", True)
@@ -582,7 +606,7 @@ def serve(args: types.StartupArgs):
             req.set("security", ticker)
             req.set("eventType", typ)
             req.set("interval", interval)
-            start_t, end_t = _SESSION_TIMES.get(session, _SESSION_TIMES["allday"])
+            start_t, end_t = _session_window(session)
             req.set("startDateTime", _parse_datetime(date, start_t))
             req.set("endDateTime", _parse_datetime(date, end_t))
             if kwargs:
@@ -627,7 +651,7 @@ def serve(args: types.StartupArgs):
         max_rows: cap output at this many ticks (default 5000); response includes truncation warning if hit.
         """
     )
-    async def bdtick(ticker: str, date: str, session: str = "allday", time_range: tuple[str, ...] | None = None, event_types: list[str] | None = None, max_rows: int = 5000, kwargs: dict[str, object] | None = None) -> str:
+    async def bdtick(ticker: str, date: str, session: str = "allday", time_range: tuple[str, str] | None = None, event_types: list[str] | None = None, max_rows: int = 5000, kwargs: dict[str, object] | None = None) -> str:
         blp_session = _make_session()
         try:
             svc = _open_service(blp_session, _REFDATA)
@@ -635,10 +659,14 @@ def serve(args: types.StartupArgs):
             req.set("security", ticker)
             for etype in (event_types or ["TRADE"]):
                 req.append("eventTypes", etype)
-            if time_range and len(time_range) == 2:
-                start_t, end_t = time_range[0], time_range[1]
+            if time_range is not None:
+                if len(time_range) != 2:
+                    raise ValueError(
+                        f"time_range must be a ('HH:MM:SS', 'HH:MM:SS') pair, got {time_range!r}"
+                    )
+                start_t, end_t = time_range
             else:
-                start_t, end_t = _SESSION_TIMES.get(session, _SESSION_TIMES["allday"])
+                start_t, end_t = _session_window(session)
             req.set("startDateTime", _parse_datetime(date, start_t))
             req.set("endDateTime", _parse_datetime(date, end_t))
             if kwargs:
@@ -905,7 +933,7 @@ def serve(args: types.StartupArgs):
                             col_name = col.getElementAsString("name")
                             sec_cols[col_name] = _to_value(col.getElement("values"))
                     rows = []
-                    for k, (id_v, val_v) in enumerate(zip(id_vals, val_vals)):
+                    for k, (id_v, val_v) in enumerate(zip(id_vals, val_vals, strict=False)):
                         row: dict = {"id": id_v, "value": val_v}
                         for col_name, col_vals in sec_cols.items():
                             row[col_name] = col_vals[k] if k < len(col_vals) else None
@@ -1159,9 +1187,8 @@ def serve(args: types.StartupArgs):
             session.stop()
 
     if args.transport == types.Transport.HTTP:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _s:
-            _s.connect(("8.8.8.8", 80))
-            local_ip = _s.getsockname()[0]
         print(f"Bloomberg MCP server listening on http://{args.host}:{args.port}/mcp")
-        print(f"Connect clients to: http://{local_ip}:{args.port}/mcp")
+        local_ip = _lan_ip()
+        if local_ip:
+            print(f"Connect clients to: http://{local_ip}:{args.port}/mcp")
     mcp.run(transport=args.transport.value)
