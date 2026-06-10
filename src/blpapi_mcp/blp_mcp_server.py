@@ -398,61 +398,34 @@ def serve(args: types.StartupArgs):
 
         If you don't know the mnemonic for a field, call `field_search` first — don't guess.
 
-        Ticker format examples:
-          Equities:    'AAPL US Equity', 'MSFT US Equity', 'BP/ LN Equity', 'SAP GY Equity'
-          Indices:     'SPX Index', 'UKX Index', 'NKY Index', 'INDU Index'
-          FX:          'EURUSD Curncy', 'GBPUSD Curncy', 'USDJPY Curncy'
-          Govt bonds:  'GT10 Govt' (US 10yr), 'GT2 Govt' (US 2yr)
-          Futures:     'ESZ4 Index' (S&P future), 'CLZ4 Comdty' (crude oil)
+        Ticker formats: 'AAPL US Equity', 'BP/ LN Equity', 'SPX Index', 'EURUSD Curncy',
+        'GT10 Govt' (US 10yr), 'ESZ4 Index' (S&P future), 'CLZ4 Comdty' (crude oil).
 
         Common fields:
-          Pricing:     PX_LAST, PX_OPEN, PX_HIGH, PX_LOW, PX_VOLUME, PX_BID, PX_ASK
-          Valuation:   PE_RATIO, PX_TO_BOOK_RATIO, EV_TO_T12M_EBITDA, EQY_DVD_YLD_IND
-          Financials:  CUR_MKT_CAP, SALES_REV_TURN, EBITDA, CF_FREE_CASH_FLOW, BOOK_VAL_PER_SH
-          Quality:     RETURN_ON_EQUITY, RETURN_ON_ASSET, GROSS_MARGIN, TOT_DEBT_TO_TOT_EQY
-          Info:        NAME, TICKER, GICS_SECTOR_NAME, GICS_INDUSTRY_NAME, COUNTRY_ISO, CRNCY, EXCH_CODE
-          Risk:        VOLATILITY_30D, VOLATILITY_90D, BETA_ADJUSTED_OVERRIDABLE, SHORT_INT_RATIO
-          Estimates:   BEST_TARGET_PRICE, BEST_EPS, ANALYST_RATING
-          Ownership:   EQY_INST_PCT_SH_OUT, SHARES_OUTSTANDING, FLOAT_SHARES_OUTSTANDING
+          Pricing:    PX_LAST, PX_OPEN, PX_HIGH, PX_LOW, PX_VOLUME, PX_BID, PX_ASK
+          Valuation:  PE_RATIO, PX_TO_BOOK_RATIO, EV_TO_T12M_EBITDA, EQY_DVD_YLD_IND
+          Financials: CUR_MKT_CAP, SALES_REV_TURN, EBITDA, CF_FREE_CASH_FLOW, BOOK_VAL_PER_SH
+          Quality:    RETURN_ON_EQUITY, RETURN_ON_ASSET, GROSS_MARGIN, TOT_DEBT_TO_TOT_EQY
+          Info:       NAME, GICS_SECTOR_NAME, COUNTRY_ISO, CRNCY, EXCH_CODE
+          Risk:       VOLATILITY_30D, VOLATILITY_90D, BETA_ADJUSTED_OVERRIDABLE, SHORT_INT_RATIO
+          Estimates:  BEST_TARGET_PRICE, ANALYST_RATING
+          Ownership:  EQY_INST_PCT_SH_OUT, SHARES_OUTSTANDING, FLOAT_SHARES_OUTSTANDING
 
-        Consensus estimates (forward-looking, use with BEST_FPERIOD_OVERRIDE):
-          BEST_EPS             — consensus EPS
-          BEST_SALES           — consensus revenue
-          BEST_EBIT            — consensus operating profit/EBIT (matches Terminal display)
-          BEST_EBITDA          — consensus EBITDA
-          BEST_NET_INCOME      — consensus net income
-          BEST_EV_TO_BEST_EBITDA    — consensus EV/EBITDA multiple
-          BEST_CURRENT_EV_BEST_EBIT — consensus EV/EBIT multiple
+        Consensus estimates (set BEST_FPERIOD_OVERRIDE, e.g. '2026Y', '2027Y', '2026Q1'):
+          BEST_EPS, BEST_SALES, BEST_EBIT, BEST_EBITDA, BEST_NET_INCOME,
+          BEST_EV_TO_BEST_EBITDA (EV/EBITDA), BEST_CURRENT_EV_BEST_EBIT (EV/EBIT)
+        Historical actuals excluding one-time items: IS_COMP_EPS_ADJUSTED, IS_COMPARABLE_EBIT.
 
-        Historical actuals (comparable/adjusted):
-          IS_COMP_EPS_ADJUSTED — comparable EPS (excludes one-time items)
-          IS_COMPARABLE_EBIT   — comparable EBIT (clean operating profit)
-          These represent analyst-agreed "real earnings" for performance analysis.
-
-        IMPORTANT field rules:
-          - For consensus operating profit use BEST_EBIT, not BEST_OPER_INC
-          - BEST_EBIT matches what the Bloomberg Terminal displays
-          - NEVER use BEST_EPS_NXT_YR — use BEST_EPS with BEST_FPERIOD_OVERRIDE instead
-          - IS_COMP_* fields are for historical actuals only
+        Field rules:
+          - Consensus operating profit is BEST_EBIT (matches the Terminal), not BEST_OPER_INC
+          - NEVER use BEST_EPS_NXT_YR — use BEST_EPS with BEST_FPERIOD_OVERRIDE
+          - IS_COMP_* fields are historical actuals only
 
         kwargs: Bloomberg field overrides as key/value pairs.
 
-        BEST_FPERIOD_OVERRIDE format:
-          "2026Y"  — fiscal year 2026
-          "2027Y"  — fiscal year 2027
-          "2026Q1" — Q1 2026
-          "2026Q2" — Q2 2026
-          "2027Q4" — Q4 2027
-
-        Example — FY2026 and FY2027 consensus estimates:
-          bdp(tickers=['VOLVB SS Equity'],
-              flds=['BEST_EPS', 'BEST_SALES', 'BEST_EBIT'],
+        Example — FY2026 consensus:
+          bdp(tickers=['VOLVB SS Equity'], flds=['BEST_EPS', 'BEST_SALES', 'BEST_EBIT'],
               kwargs={'BEST_FPERIOD_OVERRIDE': '2026Y'})
-
-        Example — Q1 2026 consensus estimates:
-          bdp(tickers=['VOLVB SS Equity'],
-              flds=['BEST_EPS', 'BEST_SALES', 'BEST_EBIT'],
-              kwargs={'BEST_FPERIOD_OVERRIDE': '2026Q1'})
         """
     )
     async def bdp(tickers: list[str], flds: list[str], kwargs: dict[str, object] | None = None) -> str:
@@ -1064,13 +1037,14 @@ def serve(args: types.StartupArgs):
             bdp/bdh), or 'RealTime' (streaming fields).
           include_documentation: Include the longer field documentation string. Default False
             to keep search responses compact — use `field_info` for the full doc.
-          max_results: Cap on rows returned. Default 50.
+          max_results: Cap on rows returned. Default 20 — raise it if the first search
+            doesn't surface the right field.
 
         Returns CSV with columns: field_id, mnemonic, description, category, datatype,
         and documentation (if include_documentation=True).
         """
     )
-    async def field_search(query: str, field_type: str = "Any", include_documentation: bool = False, max_results: int = 50) -> str:
+    async def field_search(query: str, field_type: str = "Any", include_documentation: bool = False, max_results: int = 20) -> str:
         if field_type not in ("Any", "Static", "RealTime"):
             raise ValueError(f"Unknown field_type {field_type!r}. Valid: Any, Static, RealTime")
         session = _make_session()
@@ -1122,9 +1096,6 @@ def serve(args: types.StartupArgs):
         description="""Look up full metadata and documentation for one or more known Bloomberg
         field mnemonics. Use this after `field_search` to confirm the exact field to use and
         to learn about required overrides (e.g. BEST_FPERIOD_OVERRIDE) before calling bdp/bdh.
-
-        Bloomberg field naming is inconsistent across BEST_*, EST_*, BN_*, ARDR_*, BF_xxx etc.
-        — do NOT guess. Call `field_search` first, then `field_info` to confirm, then bdp/bdh.
 
         Args:
           mnemonics: List of field mnemonics or IDs (e.g. ['BEST_SALES', 'PX_LAST']).
