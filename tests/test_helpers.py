@@ -6,6 +6,7 @@ import pytest
 
 from blpapi_mcp import types
 from blpapi_mcp.blp_mcp_server import (
+    _connector_overrides,
     _csv,
     _flatten_by_ticker,
     _fmt_date,
@@ -13,6 +14,31 @@ from blpapi_mcp.blp_mcp_server import (
     _session_window,
     _single_field_rows,
 )
+
+
+class TestConnectorOverrides:
+    def test_empty(self):
+        assert _connector_overrides(None) == {}
+
+    def test_key_value_strings(self):
+        assert _connector_overrides(["DVD_START_DT=20240101", "A = b "]) == {
+            "DVD_START_DT": "20240101",
+            "A": "b",
+        }
+
+    def test_fperiod_and_currency_shortcuts(self):
+        assert _connector_overrides(None, fperiod_override="2026Y", currency="USD") == {
+            "BEST_FPERIOD_OVERRIDE": "2026Y",
+            "EQY_FUND_CRNCY": "USD",
+        }
+
+    def test_shortcut_wins_over_overrides_list(self):
+        kv = _connector_overrides(["BEST_FPERIOD_OVERRIDE=2025Y"], fperiod_override="2026Y")
+        assert kv == {"BEST_FPERIOD_OVERRIDE": "2026Y"}
+
+    def test_rejects_malformed_entry(self):
+        with pytest.raises(ValueError, match="KEY=VALUE"):
+            _connector_overrides(["NOT_A_PAIR"])
 
 
 class TestCsv:

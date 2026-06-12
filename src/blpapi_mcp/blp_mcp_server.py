@@ -65,28 +65,35 @@ def _open_service(session, name: str):
 
 
 def _to_value(elem):
-    """Recursively convert a blpapi Element to a native Python value."""
+    """Recursively convert a blpapi Element to a native Python value.
+    Bloomberg sometimes returns null/empty scalar elements whose typed getters
+    raise — treat any unreadable element as None rather than failing the row."""
+    try:
+        if elem.isNull():
+            return None
+    except Exception:
+        pass
     if elem.isArray():
         return [_to_value(elem.getValueAsElement(i)) for i in range(elem.numValues())]
     dtype = elem.datatype()
-    if dtype in (blpapi.DataType.SEQUENCE, blpapi.DataType.CHOICE):
-        return {
-            str(elem.getElement(i).name()): _to_value(elem.getElement(i))
-            for i in range(elem.numElements())
-        }
-    if dtype == blpapi.DataType.BOOL:
-        return elem.getValueAsBool()
-    if dtype in (blpapi.DataType.INT32, blpapi.DataType.INT64):
-        return elem.getValueAsInteger()
-    if dtype in (blpapi.DataType.FLOAT32, blpapi.DataType.FLOAT64):
-        v = elem.getValueAsFloat()
-        return None if math.isnan(v) else v
-    if dtype == blpapi.DataType.DATE:
-        d = elem.getValueAsDatetime()
-        return f"{d.year:04d}-{d.month:02d}-{d.day:02d}"
-    if dtype in (blpapi.DataType.TIME, blpapi.DataType.DATETIME):
-        return str(elem.getValueAsDatetime())
     try:
+        if dtype in (blpapi.DataType.SEQUENCE, blpapi.DataType.CHOICE):
+            return {
+                str(elem.getElement(i).name()): _to_value(elem.getElement(i))
+                for i in range(elem.numElements())
+            }
+        if dtype == blpapi.DataType.BOOL:
+            return elem.getValueAsBool()
+        if dtype in (blpapi.DataType.INT32, blpapi.DataType.INT64):
+            return elem.getValueAsInteger()
+        if dtype in (blpapi.DataType.FLOAT32, blpapi.DataType.FLOAT64):
+            v = elem.getValueAsFloat()
+            return None if math.isnan(v) else v
+        if dtype == blpapi.DataType.DATE:
+            d = elem.getValueAsDatetime()
+            return f"{d.year:04d}-{d.month:02d}-{d.day:02d}"
+        if dtype in (blpapi.DataType.TIME, blpapi.DataType.DATETIME):
+            return str(elem.getValueAsDatetime())
         return elem.getValueAsString()
     except Exception:
         return None
@@ -172,6 +179,27 @@ def _set_overrides(req, overrides: dict) -> None:
         o = ovr.appendElement()
         o.setElement("fieldId", k)
         o.setElement("value", str(v))
+
+
+def _connector_overrides(
+    overrides: list[str] | None,
+    fperiod_override: str | None = None,
+    currency: str | None = None,
+) -> dict[str, str]:
+    """Build a Bloomberg override dict from connector-friendly flat params.
+    Remote connectors (ChatGPT, Claude web) handle flat string params far more
+    reliably than dict-typed args, so overrides arrive as "KEY=VALUE" strings."""
+    kv: dict[str, str] = {}
+    for item in overrides or []:
+        if "=" not in item:
+            raise ValueError(f'overrides entries must be "KEY=VALUE" strings, got {item!r}')
+        k, v = item.split("=", 1)
+        kv[k.strip()] = v.strip()
+    if fperiod_override:
+        kv["BEST_FPERIOD_OVERRIDE"] = fperiod_override
+    if currency:
+        kv["EQY_FUND_CRNCY"] = currency
+    return kv
 
 
 def _reference_request(svc, securities: list[str], fields: list[str], overrides: dict | None = None):
@@ -411,28 +439,29 @@ def serve(args: types.StartupArgs):
           Estimates:  BEST_TARGET_PRICE, ANALYST_RATING
           Ownership:  EQY_INST_PCT_SH_OUT, SHARES_OUTSTANDING, FLOAT_SHARES_OUTSTANDING
 
-        Consensus estimates (set BEST_FPERIOD_OVERRIDE, e.g. '2026Y', '2027Y', '2026Q1'):
+        Consensus estimates (set fperiod_override, e.g. '2026Y', '2027Y', '2026Q1'):
           BEST_EPS, BEST_SALES, BEST_EBIT, BEST_EBITDA, BEST_NET_INCOME,
           BEST_EV_TO_BEST_EBITDA (EV/EBITDA), BEST_CURRENT_EV_BEST_EBIT (EV/EBIT)
         Historical actuals excluding one-time items: IS_COMP_EPS_ADJUSTED, IS_COMPARABLE_EBIT.
 
         Field rules:
           - Consensus operating profit is BEST_EBIT (matches the Terminal), not BEST_OPER_INC
-          - NEVER use BEST_EPS_NXT_YR — use BEST_EPS with BEST_FPERIOD_OVERRIDE
+          - NEVER use BEST_EPS_NXT_YR — use BEST_EPS with fperiod_override
           - IS_COMP_* fields are historical actuals only
 
-        kwargs: Bloomberg field overrides as key/value pairs.
+        currency: report values in this currency (EQY_FUND_CRNCY), e.g. 'USD', 'SEK'
+        overrides: any other Bloomberg field overrides as "KEY=VALUE" strings
 
         Example — FY2026 consensus:
           bdp(tickers=['VOLVB SS Equity'], flds=['BEST_EPS', 'BEST_SALES', 'BEST_EBIT'],
-              kwargs={'BEST_FPERIOD_OVERRIDE': '2026Y'})
+              fperiod_override='2026Y')
         """
     )
-    async def bdp(tickers: list[str], flds: list[str], kwargs: dict[str, object] | None = None) -> str:
+    async def bdp(tickers: list[str], flds: list[str], fperiod_override: str | None = None, currency: str | None = None, overrides: list[str] | None = None) -> str:
         session = _make_session()
         try:
             svc = _open_service(session, _REFDATA)
-            req = _reference_request(svc, tickers, flds, kwargs)
+            req = _reference_request(svc, tickers, flds, _connector_overrides(overrides, fperiod_override, currency))
             session.sendRequest(req)
             result = _collect_reference_rows(session, flds)
             if len(result) == 1:
@@ -466,11 +495,11 @@ def serve(args: types.StartupArgs):
                         DEBT_STRUCTURE (full debt breakdown)
         """
     )
-    async def bds(tickers: list[str], flds: list[str], kwargs: dict[str, object] | None = None) -> str:
+    async def bds(tickers: list[str], flds: list[str], fperiod_override: str | None = None, currency: str | None = None, overrides: list[str] | None = None) -> str:
         session = _make_session()
         try:
             svc = _open_service(session, _REFDATA)
-            req = _reference_request(svc, tickers, flds, kwargs)
+            req = _reference_request(svc, tickers, flds, _connector_overrides(overrides, fperiod_override, currency))
             session.sendRequest(req)
             result = _collect_reference_rows(session, flds)
             rows = []
@@ -513,14 +542,16 @@ def serve(args: types.StartupArgs):
         Date format: 'YYYY-MM-DD' or 'today'
         periodicity: 'DAILY' (default), 'WEEKLY', 'MONTHLY', 'QUARTERLY', 'SEMI_ANNUALLY', 'YEARLY'
         adjust: 'all' (splits+dividends), 'dvd' (dividends only), 'split' (splits only), None
-        kwargs: Bloomberg field overrides as key/value pairs (e.g. BEST_FPERIOD_OVERRIDE, EQY_FUND_CRNCY)
+        fperiod_override: fiscal period for consensus estimates (BEST_FPERIOD_OVERRIDE), e.g. '2026Y'
+        currency: report values in this currency (EQY_FUND_CRNCY), e.g. 'USD'
+        overrides: any other Bloomberg field overrides as "KEY=VALUE" strings, e.g. ["EQY_FUND_CRNCY=USD"]
 
         Fields: same set as bdp. Useful additions for time series:
           DAY_TO_DAY_TOT_RETURN_GROSS_DVDS — total return including dividends
           For estimates use periodicity='QUARTERLY' or 'YEARLY' with BEST_EPS, BEST_SALES etc.
         """
     )
-    async def bdh(tickers: list[str], flds: list[str], start_date: str | None = None, end_date: str = "today", periodicity: str = "DAILY", adjust: str | None = None, kwargs: dict[str, object] | None = None) -> str:
+    async def bdh(tickers: list[str], flds: list[str], start_date: str | None = None, end_date: str = "today", periodicity: str = "DAILY", adjust: str | None = None, fperiod_override: str | None = None, currency: str | None = None, overrides: list[str] | None = None) -> str:
         session = _make_session()
         try:
             svc = _open_service(session, _REFDATA)
@@ -540,8 +571,9 @@ def serve(args: types.StartupArgs):
                 req.set("adjustmentAbnormal", True)
             if adjust in ("all", "split"):
                 req.set("adjustmentSplit", True)
-            if kwargs:
-                _set_overrides(req, kwargs)
+            kv = _connector_overrides(overrides, fperiod_override, currency)
+            if kv:
+                _set_overrides(req, kv)
             session.sendRequest(req)
 
             def _row(row_elem):
@@ -689,7 +721,7 @@ def serve(args: types.StartupArgs):
           - 'What are MSFT business segments by operating income?' → by='Products', typ='Operating_Income'
         """
     )
-    async def earning(ticker: str, by: str = "Geo", typ: str = "Revenue", ccy: str | None = None, kwargs: dict[str, object] | None = None) -> str:
+    async def earning(ticker: str, by: str = "Geo", typ: str = "Revenue", ccy: str | None = None) -> str:
         # Map parameters to Bloomberg bulk fields
         field_map = {
             ("Geo",      "Revenue"):          "GEO_SEGMENT_SALES_PCTS",
@@ -703,9 +735,7 @@ def serve(args: types.StartupArgs):
                 f"Unsupported by/typ combination ({by!r}, {typ!r}). "
                 f"Valid combinations: {sorted(field_map)}"
             )
-        overrides = dict(kwargs) if kwargs else {}
-        if ccy:
-            overrides["EQY_FUND_CRNCY"] = ccy
+        overrides = {"EQY_FUND_CRNCY": ccy} if ccy else {}
         session = _make_session()
         try:
             svc = _open_service(session, _REFDATA)
@@ -733,9 +763,9 @@ def serve(args: types.StartupArgs):
         Returns: ex-date, declared date, record date, pay date, amount, split ratio, frequency, currency.
         """
     )
-    async def dividend(tickers: list[str], typ: str = "all", start_date: str | None = None, end_date: str | None = None, kwargs: dict[str, object] | None = None) -> str:
+    async def dividend(tickers: list[str], typ: str = "all", start_date: str | None = None, end_date: str | None = None) -> str:
         fld = "DVD_HIST_ALL" if typ == "all" else "DVD_HIST" if typ == "dividend" else "SPLIT_HIST"
-        overrides = dict(kwargs) if kwargs else {}
+        overrides: dict[str, str] = {}
         if start_date:
             overrides["DVD_START_DT"] = _fmt_date(start_date)
         if end_date:
@@ -768,7 +798,7 @@ def serve(args: types.StartupArgs):
         Returns a list of securities matching the screen criteria.
         """
     )
-    async def beqs(screen: str, asof: str | None = None, typ: str = "PRIVATE", group: str = "General", kwargs: dict[str, object] | None = None) -> str:
+    async def beqs(screen: str, asof: str | None = None, typ: str = "PRIVATE", group: str = "General") -> str:
         session = _make_session()
         try:
             svc = _open_service(session, _REFDATA)
@@ -776,13 +806,8 @@ def serve(args: types.StartupArgs):
             req.set("screenName", screen)
             req.set("screenType", typ)
             req.set("Group", group)
-            overrides: dict = {}
             if asof:
-                overrides["REFERENCE_DATE"] = _fmt_date(asof)
-            if kwargs:
-                overrides.update(kwargs)
-            if overrides:
-                _set_overrides(req, overrides)
+                _set_overrides(req, {"REFERENCE_DATE": _fmt_date(asof)})
             session.sendRequest(req)
             results = []
             for msg in _response_messages(session):
