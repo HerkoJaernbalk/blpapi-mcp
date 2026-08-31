@@ -10,7 +10,8 @@ authors = [
 requires-python = ">=3.10, <3.13"
 dependencies = [
     "blpapi>=3.25.3",
-    "mcp[cli]>=1.6.0",
+    # The server uses the MCP SDK v1 FastMCP API. SDK v2 renamed and moved it.
+    "mcp[cli]>=1.6.0,<2",
 ]
 
 [project.scripts]
