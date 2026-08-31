@@ -1,9 +1,12 @@
+import atexit
 import csv
 import datetime as dt
 import io
 import math
 import os
 import socket
+import threading
+from contextlib import contextmanager
 
 import blpapi
 from mcp.server.fastmcp import FastMCP
@@ -62,6 +65,58 @@ def _open_service(session, name: str):
     if not session.openService(name):
         raise RuntimeError(f"Failed to open {name}")
     return session.getService(name)
+
+
+class _BloombergSession:
+    """Lazily connect once and serialize access to the session event queue.
+
+    BLPAPI's default session event queue is shared by all requests on a
+    session.  The tool implementations collect from that queue without
+    filtering by correlation id, so holding the lock until the complete
+    response has been consumed is required for correctness.  Reusing the
+    session still avoids reconnecting and reopening services for every tool
+    call.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._session: blpapi.Session | None = None
+        self._services: dict[str, object] = {}
+
+    @contextmanager
+    def request(self, service_name: str):
+        with self._lock:
+            try:
+                if self._session is None:
+                    self._session = _make_session()
+                service = self._services.get(service_name)
+                if service is None:
+                    service = _open_service(self._session, service_name)
+                    self._services[service_name] = service
+                yield self._session, service
+            except Exception:
+                # A timeout or transport error can leave a late response in
+                # the session queue.  Do not let the next request consume it.
+                self._reset_locked()
+                raise
+
+    def _reset_locked(self) -> None:
+        session = self._session
+        self._session = None
+        self._services.clear()
+        if session is not None:
+            try:
+                session.stop()
+            except Exception:
+                pass
+
+    def stop(self) -> None:
+        with self._lock:
+            self._reset_locked()
+
+
+_BLOOMBERG = _BloombergSession()
+atexit.register(_BLOOMBERG.stop)
 
 
 def _to_value(elem):
@@ -457,10 +512,8 @@ def serve(args: types.StartupArgs):
               fperiod_override='2026Y')
         """
     )
-    async def bdp(tickers: list[str], flds: list[str], fperiod_override: str | None = None, currency: str | None = None, overrides: list[str] | None = None) -> str:
-        session = _make_session()
-        try:
-            svc = _open_service(session, _REFDATA)
+    def bdp(tickers: list[str], flds: list[str], fperiod_override: str | None = None, currency: str | None = None, overrides: list[str] | None = None) -> str:
+        with _BLOOMBERG.request(_REFDATA) as (session, svc):
             req = _reference_request(svc, tickers, flds, _connector_overrides(overrides, fperiod_override, currency))
             session.sendRequest(req)
             result = _collect_reference_rows(session, flds)
@@ -469,8 +522,6 @@ def serve(args: types.StartupArgs):
             else:
                 rows = [{"ticker": t, **fields} for t, fields in result.items()]
             return _csv(rows)
-        finally:
-            session.stop()
 
     @mcp.tool(
         name="bds",
@@ -495,10 +546,8 @@ def serve(args: types.StartupArgs):
                         DEBT_STRUCTURE (full debt breakdown)
         """
     )
-    async def bds(tickers: list[str], flds: list[str], fperiod_override: str | None = None, currency: str | None = None, overrides: list[str] | None = None) -> str:
-        session = _make_session()
-        try:
-            svc = _open_service(session, _REFDATA)
+    def bds(tickers: list[str], flds: list[str], fperiod_override: str | None = None, currency: str | None = None, overrides: list[str] | None = None) -> str:
+        with _BLOOMBERG.request(_REFDATA) as (session, svc):
             req = _reference_request(svc, tickers, flds, _connector_overrides(overrides, fperiod_override, currency))
             session.sendRequest(req)
             result = _collect_reference_rows(session, flds)
@@ -527,8 +576,6 @@ def serve(args: types.StartupArgs):
                     else:
                         rows.append({**prefix, "value": data})
             return _csv(rows)
-        finally:
-            session.stop()
 
     @mcp.tool(
         name="bdh",
@@ -551,10 +598,8 @@ def serve(args: types.StartupArgs):
           For estimates use periodicity='QUARTERLY' or 'YEARLY' with BEST_EPS, BEST_SALES etc.
         """
     )
-    async def bdh(tickers: list[str], flds: list[str], start_date: str | None = None, end_date: str = "today", periodicity: str = "DAILY", adjust: str | None = None, fperiod_override: str | None = None, currency: str | None = None, overrides: list[str] | None = None) -> str:
-        session = _make_session()
-        try:
-            svc = _open_service(session, _REFDATA)
+    def bdh(tickers: list[str], flds: list[str], start_date: str | None = None, end_date: str = "today", periodicity: str = "DAILY", adjust: str | None = None, fperiod_override: str | None = None, currency: str | None = None, overrides: list[str] | None = None) -> str:
+        with _BLOOMBERG.request(_REFDATA) as (session, svc):
             req = svc.createRequest("HistoricalDataRequest")
             for t in tickers:
                 req.append("securities", t)
@@ -584,8 +629,6 @@ def serve(args: types.StartupArgs):
 
             result = _collect_historical_rows(session, _row)
             return _csv(_flatten_by_ticker(result))
-        finally:
-            session.stop()
 
     @mcp.tool(
         name="bdib",
@@ -603,10 +646,8 @@ def serve(args: types.StartupArgs):
         Use this for intraday price analysis, VWAP calculations, or studying intraday patterns.
         """
     )
-    async def bdib(ticker: str, date: str, session: str = "allday", typ: str = "TRADE", interval: int = 1, kwargs: dict[str, object] | None = None) -> str:
-        blp_session = _make_session()
-        try:
-            svc = _open_service(blp_session, _REFDATA)
+    def bdib(ticker: str, date: str, session: str = "allday", typ: str = "TRADE", interval: int = 1, kwargs: dict[str, object] | None = None) -> str:
+        with _BLOOMBERG.request(_REFDATA) as (blp_session, svc):
             req = svc.createRequest("IntradayBarRequest")
             req.set("security", ticker)
             req.set("eventType", typ)
@@ -636,8 +677,6 @@ def serve(args: types.StartupArgs):
                         "numEvents": bar.getElementAsInteger("numEvents"),
                     })
             return _csv(bars)
-        finally:
-            blp_session.stop()
 
     @mcp.tool(
         name="bdtick",
@@ -656,10 +695,8 @@ def serve(args: types.StartupArgs):
         max_rows: cap output at this many ticks (default 5000); response includes truncation warning if hit.
         """
     )
-    async def bdtick(ticker: str, date: str, session: str = "allday", time_range: tuple[str, str] | None = None, event_types: list[str] | None = None, max_rows: int = 5000, kwargs: dict[str, object] | None = None) -> str:
-        blp_session = _make_session()
-        try:
-            svc = _open_service(blp_session, _REFDATA)
+    def bdtick(ticker: str, date: str, session: str = "allday", time_range: tuple[str, str] | None = None, event_types: list[str] | None = None, max_rows: int = 5000, kwargs: dict[str, object] | None = None) -> str:
+        with _BLOOMBERG.request(_REFDATA) as (blp_session, svc):
             req = svc.createRequest("IntradayTickRequest")
             req.set("security", ticker)
             for etype in (event_types or ["TRADE"]):
@@ -702,8 +739,6 @@ def serve(args: types.StartupArgs):
             if truncated:
                 result = f"# WARNING: truncated at {max_rows} rows — use time_range or max_rows to narrow\n" + result
             return result
-        finally:
-            blp_session.stop()
 
     @mcp.tool(
         name="earning",
@@ -721,7 +756,7 @@ def serve(args: types.StartupArgs):
           - 'What are MSFT business segments by operating income?' → by='Products', typ='Operating_Income'
         """
     )
-    async def earning(ticker: str, by: str = "Geo", typ: str = "Revenue", ccy: str | None = None) -> str:
+    def earning(ticker: str, by: str = "Geo", typ: str = "Revenue", ccy: str | None = None) -> str:
         # Map parameters to Bloomberg bulk fields
         field_map = {
             ("Geo",      "Revenue"):          "GEO_SEGMENT_SALES_PCTS",
@@ -736,9 +771,7 @@ def serve(args: types.StartupArgs):
                 f"Valid combinations: {sorted(field_map)}"
             )
         overrides = {"EQY_FUND_CRNCY": ccy} if ccy else {}
-        session = _make_session()
-        try:
-            svc = _open_service(session, _REFDATA)
+        with _BLOOMBERG.request(_REFDATA) as (session, svc):
             req = _reference_request(svc, [ticker], [fld], overrides)
             session.sendRequest(req)
             raw = _collect_reference_rows(session, [fld])
@@ -747,8 +780,6 @@ def serve(args: types.StartupArgs):
                 for t, row in raw.items()
             }
             return _csv(_single_field_rows(result))
-        finally:
-            session.stop()
 
     @mcp.tool(
         name="dividend",
@@ -763,16 +794,14 @@ def serve(args: types.StartupArgs):
         Returns: ex-date, declared date, record date, pay date, amount, split ratio, frequency, currency.
         """
     )
-    async def dividend(tickers: list[str], typ: str = "all", start_date: str | None = None, end_date: str | None = None) -> str:
+    def dividend(tickers: list[str], typ: str = "all", start_date: str | None = None, end_date: str | None = None) -> str:
         fld = "DVD_HIST_ALL" if typ == "all" else "DVD_HIST" if typ == "dividend" else "SPLIT_HIST"
         overrides: dict[str, str] = {}
         if start_date:
             overrides["DVD_START_DT"] = _fmt_date(start_date)
         if end_date:
             overrides["DVD_END_DT"] = _fmt_date(end_date)
-        session = _make_session()
-        try:
-            svc = _open_service(session, _REFDATA)
+        with _BLOOMBERG.request(_REFDATA) as (session, svc):
             req = _reference_request(svc, tickers, [fld], overrides)
             session.sendRequest(req)
             raw = _collect_reference_rows(session, [fld])
@@ -781,8 +810,6 @@ def serve(args: types.StartupArgs):
                 for t, row in raw.items()
             }
             return _csv(_single_field_rows(result))
-        finally:
-            session.stop()
 
     @mcp.tool(
         name="beqs",
@@ -798,10 +825,8 @@ def serve(args: types.StartupArgs):
         Returns a list of securities matching the screen criteria.
         """
     )
-    async def beqs(screen: str, asof: str | None = None, typ: str = "PRIVATE", group: str = "General") -> str:
-        session = _make_session()
-        try:
-            svc = _open_service(session, _REFDATA)
+    def beqs(screen: str, asof: str | None = None, typ: str = "PRIVATE", group: str = "General") -> str:
+        with _BLOOMBERG.request(_REFDATA) as (session, svc):
             req = svc.createRequest("BeqsRequest")
             req.set("screenName", screen)
             req.set("screenType", typ)
@@ -820,8 +845,6 @@ def serve(args: types.StartupArgs):
                 else:
                     _unexpected_response(msg, "BeqsRequest")
             return _csv(results)
-        finally:
-            session.stop()
 
     @mcp.tool(
         name="turnover",
@@ -840,10 +863,8 @@ def serve(args: types.StartupArgs):
           - Analyse volume patterns over time for execution planning
         """
     )
-    async def turnover(tickers: list[str], start_date: str | None = None, end_date: str | None = None, ccy: str = "USD", factor: float = 1e6) -> str:
-        session = _make_session()
-        try:
-            svc = _open_service(session, _REFDATA)
+    def turnover(tickers: list[str], start_date: str | None = None, end_date: str | None = None, ccy: str = "USD", factor: float = 1e6) -> str:
+        with _BLOOMBERG.request(_REFDATA) as (session, svc):
             req = svc.createRequest("HistoricalDataRequest")
             for t in tickers:
                 req.append("securities", t)
@@ -864,8 +885,6 @@ def serve(args: types.StartupArgs):
 
             result = _collect_historical_rows(session, _row)
             return _csv(_flatten_by_ticker(result))
-        finally:
-            session.stop()
 
     @mcp.tool(
         name="bql",
@@ -900,12 +919,8 @@ def serve(args: types.StartupArgs):
         Note: BQL requires a separate API entitlement beyond Terminal access.
         """
     )
-    async def bql(query: str) -> str:
-        session = _make_session()
-        try:
-            if not session.openService(_BQLSVC):
-                raise RuntimeError("Failed to open //blp/bqlsvc — BQL may require a separate entitlement")
-            svc = session.getService(_BQLSVC)
+    def bql(query: str) -> str:
+        with _BLOOMBERG.request(_BQLSVC) as (session, svc):
             req = svc.createRequest("sendQuery")
             req.set("expression", query)
             session.sendRequest(req)
@@ -940,8 +955,6 @@ def serve(args: types.StartupArgs):
 
             rows = [{"field": fname, **row} for fname, field_rows in tables.items() for row in field_rows]
             return _csv(rows)
-        finally:
-            session.stop()
 
 
     @mcp.tool(
@@ -959,10 +972,8 @@ def serve(args: types.StartupArgs):
         Useful for discovering bond tickers, options, and other securities where the ticker is not known.
         """
     )
-    async def instruments(query: str, typ: str = "Corp", max_results: int = 20) -> str:
-        session = _make_session()
-        try:
-            svc = _open_service(session, _INSTRUMENTS)
+    def instruments(query: str, typ: str = "Corp", max_results: int = 20) -> str:
+        with _BLOOMBERG.request(_INSTRUMENTS) as (session, svc):
             _check_operation(svc, "instrumentListRequest")
             yk = _YK_FILTER.get(typ)
             if yk is None:
@@ -977,8 +988,6 @@ def serve(args: types.StartupArgs):
                 lambda item: _str_fields(item, ("security", "description")),
             )
             return _csv(results)
-        finally:
-            session.stop()
 
     @mcp.tool(
         name="curve_list",
@@ -992,10 +1001,8 @@ def serve(args: types.StartupArgs):
         Useful for discovering curve identifiers to use in fixed income analytics.
         """
     )
-    async def curve_list(query: str, max_results: int = 20) -> str:
-        session = _make_session()
-        try:
-            svc = _open_service(session, _INSTRUMENTS)
+    def curve_list(query: str, max_results: int = 20) -> str:
+        with _BLOOMBERG.request(_INSTRUMENTS) as (session, svc):
             _check_operation(svc, "curveListRequest")
             req = svc.createRequest("curveListRequest")
             req.set("query", query)
@@ -1008,8 +1015,6 @@ def serve(args: types.StartupArgs):
                 lambda item: _str_fields(item, curve_fields),
             )
             return _csv(results)
-        finally:
-            session.stop()
 
     @mcp.tool(
         name="govt_list",
@@ -1023,10 +1028,8 @@ def serve(args: types.StartupArgs):
         Useful for discovering individual government bond tickers when the full ticker is not known.
         """
     )
-    async def govt_list(query: str, max_results: int = 20) -> str:
-        session = _make_session()
-        try:
-            svc = _open_service(session, _INSTRUMENTS)
+    def govt_list(query: str, max_results: int = 20) -> str:
+        with _BLOOMBERG.request(_INSTRUMENTS) as (session, svc):
             _check_operation(svc, "govtListRequest")
             req = svc.createRequest("govtListRequest")
             req.set("query", query)
@@ -1037,8 +1040,6 @@ def serve(args: types.StartupArgs):
                 lambda item: _str_fields(item, ("parseky", "name", "ticker")),
             )
             return _csv(results)
-        finally:
-            session.stop()
 
     @mcp.tool(
         name="field_search",
@@ -1069,12 +1070,10 @@ def serve(args: types.StartupArgs):
         and documentation (if include_documentation=True).
         """
     )
-    async def field_search(query: str, field_type: str = "Any", include_documentation: bool = False, max_results: int = 20) -> str:
+    def field_search(query: str, field_type: str = "Any", include_documentation: bool = False, max_results: int = 20) -> str:
         if field_type not in ("Any", "Static", "RealTime"):
             raise ValueError(f"Unknown field_type {field_type!r}. Valid: Any, Static, RealTime")
-        session = _make_session()
-        try:
-            svc = _open_service(session, _APIFLDS)
+        with _BLOOMBERG.request(_APIFLDS) as (session, svc):
             req = svc.createRequest("FieldSearchRequest")
             req.set("searchSpec", query)
             if field_type == "Static":
@@ -1112,8 +1111,6 @@ def serve(args: types.StartupArgs):
                 if len(results) >= max_results:
                     break
             return _csv(results)
-        finally:
-            session.stop()
 
     @mcp.tool(
         name="field_info",
@@ -1132,12 +1129,10 @@ def serve(args: types.StartupArgs):
         error (populated if the mnemonic was invalid — other fields will be empty).
         """
     )
-    async def field_info(mnemonics: list[str], include_documentation: bool = True) -> str:
+    def field_info(mnemonics: list[str], include_documentation: bool = True) -> str:
         if not mnemonics:
             raise ValueError("mnemonics must not be empty")
-        session = _make_session()
-        try:
-            svc = _open_service(session, _APIFLDS)
+        with _BLOOMBERG.request(_APIFLDS) as (session, svc):
             req = svc.createRequest("FieldInfoRequest")
             for m in mnemonics:
                 req.append("id", m)
@@ -1179,8 +1174,6 @@ def serve(args: types.StartupArgs):
                             row["overrides"] = ovr
                     results.append(row)
             return _csv(results)
-        finally:
-            session.stop()
 
     if args.transport == types.Transport.HTTP:
         print(f"Bloomberg MCP server listening on http://{args.host}:{args.port}/mcp")
