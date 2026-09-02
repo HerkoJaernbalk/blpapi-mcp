@@ -1,6 +1,7 @@
 import atexit
 import csv
 import datetime as dt
+import functools
 import io
 import math
 import os
@@ -8,6 +9,7 @@ import socket
 import threading
 from contextlib import contextmanager
 
+import anyio
 import blpapi
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.utilities.logging import get_logger
@@ -67,15 +69,56 @@ def _open_service(session, name: str):
     return session.getService(name)
 
 
-class _BloombergSession:
-    """Lazily connect once and serialize access to the session event queue.
+class _BloombergTimeout(RuntimeError):
+    """Raised when Bloomberg does not answer a request within _TIMEOUT."""
 
-    BLPAPI's default session event queue is shared by all requests on a
-    session.  The tool implementations collect from that queue without
-    filtering by correlation id, so holding the lock until the complete
-    response has been consumed is required for correctness.  Reusing the
-    session still avoids reconnecting and reopening services for every tool
-    call.
+
+# Errors that mean the shared session is unusable and must be rebuilt.
+# blpapi raises InvalidStateException when a request is sent on a stopped or
+# terminated session (e.g. after the Terminal restarts).  Argument errors such
+# as NotFoundException come from bad request parameters and leave the session
+# healthy, so they are deliberately not included.
+_SESSION_ERRORS = (
+    _BloombergTimeout,
+    blpapi.exception.InvalidStateException,
+    blpapi.exception.UnknownErrorException,
+)
+
+
+class _Request:
+    """One tool call's view of the shared session.
+
+    Each request gets a private ``blpapi.EventQueue`` so that responses for
+    concurrent requests can never be mixed up, and so that a late response
+    from a timed-out request lands in a queue nobody reads.  Exposes the same
+    ``sendRequest``/``nextEvent`` surface the tool bodies already use.
+    """
+
+    def __init__(self, session: blpapi.Session) -> None:
+        self._session = session
+        self._queue = blpapi.EventQueue()
+
+    def sendRequest(self, request, **kwargs):
+        return self._session.sendRequest(request, eventQueue=self._queue, **kwargs)
+
+    def nextEvent(self, timeout: int = 0):
+        return self._queue.nextEvent(timeout)
+
+    def purge(self) -> None:
+        try:
+            self._queue.purge()
+        except Exception:
+            pass
+
+
+class _BloombergSession:
+    """Lazily connect once and hand out per-request event queues.
+
+    A single ``blpapi.Session`` is thread-safe and supports many outstanding
+    requests, so the lock only guards connecting and opening services.  Tool
+    calls run concurrently in worker threads, each draining its own queue.
+    A request timeout or a session-state error is treated as a sign the
+    connection is unhealthy and triggers a reconnect on the next call.
     """
 
     def __init__(self) -> None:
@@ -83,36 +126,54 @@ class _BloombergSession:
         self._session: blpapi.Session | None = None
         self._services: dict[str, object] = {}
 
-    @contextmanager
-    def request(self, service_name: str):
+    def _acquire(self, service_name: str):
         with self._lock:
             try:
                 if self._session is None:
                     self._session = _make_session()
+                    self._services.clear()
                 service = self._services.get(service_name)
                 if service is None:
                     service = _open_service(self._session, service_name)
                     self._services[service_name] = service
-                yield self._session, service
+                return self._session, service
             except Exception:
-                # A timeout or transport error can leave a late response in
-                # the session queue.  Do not let the next request consume it.
-                self._reset_locked()
+                self._reset_locked(self._session)
                 raise
 
-    def _reset_locked(self) -> None:
-        session = self._session
+    @contextmanager
+    def request(self, service_name: str):
+        session, service = self._acquire(service_name)
+        req = _Request(session)
+        try:
+            yield req, service
+        except _SESSION_ERRORS:
+            req.purge()
+            self._reset(session)
+            raise
+        except Exception:
+            req.purge()
+            raise
+
+    def _reset(self, session: blpapi.Session | None) -> None:
+        with self._lock:
+            self._reset_locked(session)
+
+    def _reset_locked(self, session: blpapi.Session | None) -> None:
+        # Only tear down the session this caller was using; another thread
+        # may already have replaced it.
+        if session is None or session is not self._session:
+            return
         self._session = None
         self._services.clear()
-        if session is not None:
-            try:
-                session.stop()
-            except Exception:
-                pass
+        try:
+            session.stop()
+        except Exception:
+            pass
 
     def stop(self) -> None:
         with self._lock:
-            self._reset_locked()
+            self._reset_locked(self._session)
 
 
 _BLOOMBERG = _BloombergSession()
@@ -164,7 +225,7 @@ def _response_messages(session):
         if etype == blpapi.Event.RESPONSE:
             break
         if etype == blpapi.Event.TIMEOUT:
-            raise RuntimeError(f"Bloomberg request timed out after {_TIMEOUT // 1000}s")
+            raise _BloombergTimeout(f"Bloomberg request timed out after {_TIMEOUT // 1000}s")
 
 
 def _drain(session) -> list:
@@ -473,7 +534,22 @@ def serve(args: types.StartupArgs):
     logger.info("startup args: %s", args)
     logger.info("blpapi version: %s", blpapi.version())
 
-    @mcp.tool(
+    def _tool(**kwargs):
+        """Register a blocking tool so it runs in a worker thread.
+
+        FastMCP calls plain ``def`` tools directly on the event loop, which
+        would freeze the HTTP server for every other client while blpapi
+        blocks on the response.  Wrapping in ``anyio.to_thread.run_sync``
+        keeps the loop free and lets tool calls run concurrently.
+        """
+        def decorate(fn):
+            @functools.wraps(fn)
+            async def wrapper(*args, **kw):
+                return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kw))
+            return mcp.tool(**kwargs)(wrapper)
+        return decorate
+
+    @_tool(
         name="bdp",
         annotations=_READ_ONLY_HINTS,
         description="""Get Bloomberg reference/snapshot data for one or more securities.
@@ -523,7 +599,7 @@ def serve(args: types.StartupArgs):
                 rows = [{"ticker": t, **fields} for t, fields in result.items()]
             return _csv(rows)
 
-    @mcp.tool(
+    @_tool(
         name="bds",
         annotations=_READ_ONLY_HINTS,
         description="""Get Bloomberg bulk/block data — returns multi-row datasets for a security.
@@ -577,7 +653,7 @@ def serve(args: types.StartupArgs):
                         rows.append({**prefix, "value": data})
             return _csv(rows)
 
-    @mcp.tool(
+    @_tool(
         name="bdh",
         annotations=_READ_ONLY_HINTS,
         description="""Get Bloomberg historical time series data for one or more securities.
@@ -630,7 +706,7 @@ def serve(args: types.StartupArgs):
             result = _collect_historical_rows(session, _row)
             return _csv(_flatten_by_ticker(result))
 
-    @mcp.tool(
+    @_tool(
         name="bdib",
         annotations=_READ_ONLY_HINTS,
         description="""Get Bloomberg intraday bar data for a single security on a specific date.
@@ -678,7 +754,7 @@ def serve(args: types.StartupArgs):
                     })
             return _csv(bars)
 
-    @mcp.tool(
+    @_tool(
         name="bdtick",
         annotations=_READ_ONLY_HINTS,
         description="""Get Bloomberg tick-by-tick trade and quote data for a single security on a specific date.
@@ -740,7 +816,7 @@ def serve(args: types.StartupArgs):
                 result = f"# WARNING: truncated at {max_rows} rows — use time_range or max_rows to narrow\n" + result
             return result
 
-    @mcp.tool(
+    @_tool(
         name="earning",
         annotations=_READ_ONLY_HINTS,
         description="""Get Bloomberg earnings exposure breakdown by geography or business segment.
@@ -781,7 +857,7 @@ def serve(args: types.StartupArgs):
             }
             return _csv(_single_field_rows(result))
 
-    @mcp.tool(
+    @_tool(
         name="dividend",
         annotations=_READ_ONLY_HINTS,
         description="""Get Bloomberg dividend and stock split history for one or more securities.
@@ -811,7 +887,7 @@ def serve(args: types.StartupArgs):
             }
             return _csv(_single_field_rows(result))
 
-    @mcp.tool(
+    @_tool(
         name="beqs",
         annotations=_READ_ONLY_HINTS,
         description="""Run a saved Bloomberg equity screen (EQS) and return matching securities.
@@ -846,7 +922,7 @@ def serve(args: types.StartupArgs):
                     _unexpected_response(msg, "BeqsRequest")
             return _csv(results)
 
-    @mcp.tool(
+    @_tool(
         name="turnover",
         annotations=_READ_ONLY_HINTS,
         description="""Calculate daily trading turnover (value traded) for a basket of securities.
@@ -886,7 +962,7 @@ def serve(args: types.StartupArgs):
             result = _collect_historical_rows(session, _row)
             return _csv(_flatten_by_ticker(result))
 
-    @mcp.tool(
+    @_tool(
         name="bql",
         annotations=_READ_ONLY_HINTS,
         description="""Run a Bloomberg Query Language (BQL) query. More powerful than bdp/bdh for
@@ -957,7 +1033,7 @@ def serve(args: types.StartupArgs):
             return _csv(rows)
 
 
-    @mcp.tool(
+    @_tool(
         name="instruments",
         annotations=_READ_ONLY_HINTS,
         description="""Search for Bloomberg securities by name or keyword using //blp/instruments.
@@ -989,7 +1065,7 @@ def serve(args: types.StartupArgs):
             )
             return _csv(results)
 
-    @mcp.tool(
+    @_tool(
         name="curve_list",
         annotations=_READ_ONLY_HINTS,
         description="""Search for Bloomberg yield curves by name or keyword using //blp/instruments curveListRequest.
@@ -1016,7 +1092,7 @@ def serve(args: types.StartupArgs):
             )
             return _csv(results)
 
-    @mcp.tool(
+    @_tool(
         name="govt_list",
         annotations=_READ_ONLY_HINTS,
         description="""Search for Bloomberg government bonds by partial ticker using //blp/instruments govtListRequest.
@@ -1041,7 +1117,7 @@ def serve(args: types.StartupArgs):
             )
             return _csv(results)
 
-    @mcp.tool(
+    @_tool(
         name="field_search",
         annotations=_READ_ONLY_HINTS,
         description="""Search the Bloomberg field dictionary for fields matching a free-text query.
@@ -1112,7 +1188,7 @@ def serve(args: types.StartupArgs):
                     break
             return _csv(results)
 
-    @mcp.tool(
+    @_tool(
         name="field_info",
         annotations=_READ_ONLY_HINTS,
         description="""Look up full metadata and documentation for one or more known Bloomberg
