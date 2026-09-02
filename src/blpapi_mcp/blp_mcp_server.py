@@ -73,6 +73,18 @@ class _BloombergTimeout(RuntimeError):
     """Raised when Bloomberg does not answer a request within _TIMEOUT."""
 
 
+# Errors that mean the shared session is unusable and must be rebuilt.
+# blpapi raises InvalidStateException when a request is sent on a stopped or
+# terminated session (e.g. after the Terminal restarts).  Argument errors such
+# as NotFoundException come from bad request parameters and leave the session
+# healthy, so they are deliberately not included.
+_SESSION_ERRORS = (
+    _BloombergTimeout,
+    blpapi.exception.InvalidStateException,
+    blpapi.exception.UnknownErrorException,
+)
+
+
 class _Request:
     """One tool call's view of the shared session.
 
@@ -105,8 +117,8 @@ class _BloombergSession:
     A single ``blpapi.Session`` is thread-safe and supports many outstanding
     requests, so the lock only guards connecting and opening services.  Tool
     calls run concurrently in worker threads, each draining its own queue.
-    A request timeout is treated as a sign the connection is unhealthy and
-    triggers a reconnect on the next call.
+    A request timeout or a session-state error is treated as a sign the
+    connection is unhealthy and triggers a reconnect on the next call.
     """
 
     def __init__(self) -> None:
@@ -135,7 +147,7 @@ class _BloombergSession:
         req = _Request(session)
         try:
             yield req, service
-        except _BloombergTimeout:
+        except _SESSION_ERRORS:
             req.purge()
             self._reset(session)
             raise

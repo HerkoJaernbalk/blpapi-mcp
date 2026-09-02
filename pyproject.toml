@@ -9,6 +9,8 @@ authors = [
 # Original author: Samuel Seng <djsamseng@gmail.com>
 requires-python = ">=3.10, <3.13"
 dependencies = [
+    # Tool calls run in worker threads via anyio.to_thread (also an MCP SDK dependency).
+    "anyio>=4.0",
     "blpapi>=3.25.3",
     # The server uses the MCP SDK v1 FastMCP API. SDK v2 renamed and moved it.
     "mcp[cli]>=1.6.0,<2",
